@@ -1236,13 +1236,12 @@ exports.getSalesReport = async (companyId, filters) => {
 
 
 exports.getTripReport = async (companyId, filters) => {
-
   const {
-    startDate,
-    endDate,
-    farmerId,
-    driverId,
-  } = filters;
+    startDate = null,
+    endDate = null,
+    farmerId = null,
+    driverId = null,
+  } = filters || {};
 
   const result = await pool.query(
     `
@@ -1251,7 +1250,7 @@ exports.getTripReport = async (companyId, filters) => {
       t.trip_date,
       t.total_birds,
 
-      f.name AS farmer_name,
+      fr.name AS farmer_name,
       u.name AS driver_name,
 
       COALESCE(SUM(s.total_amount),0) AS total_sales,
@@ -1266,7 +1265,8 @@ exports.getTripReport = async (companyId, filters) => {
 
     FROM trips t
 
-    LEFT JOIN farmers f ON f.id = t.farmer_id
+    LEFT JOIN farms fa ON fa.id = t.farm_id
+    LEFT JOIN farmers fr ON fr.id = fa.farmer_id
     LEFT JOIN users u ON u.id = t.driver_id
     LEFT JOIN sales s ON s.trip_id = t.id
 
@@ -1275,14 +1275,14 @@ exports.getTripReport = async (companyId, filters) => {
       AND ($2::date IS NULL OR t.trip_date >= $2)
       AND ($3::date IS NULL OR t.trip_date <= $3)
 
-      AND ($4::int IS NULL OR t.farmer_id = $4)
+      AND ($4::int IS NULL OR fr.id = $4)
       AND ($5::int IS NULL OR t.driver_id = $5)
 
     GROUP BY
       t.id,
       t.trip_date,
       t.total_birds,
-      f.name,
+      fr.name,
       u.name
 
     ORDER BY t.trip_date DESC
@@ -1298,6 +1298,7 @@ exports.getTripReport = async (companyId, filters) => {
 
   return result.rows;
 };
+
 
 // =======================================================
 // 2️⃣ SINGLE TRIP SALES DETAILS (EXPAND VIEW)
@@ -1343,25 +1344,30 @@ exports.getTripSalesDetails = async (tripId) => {
 };
 
 // =======================================================
-// 3️⃣ CUSTOMER LEDGER REPORT
+// CUSTOMER SALES DETAILS (LIKE TRIP SALES)
 // =======================================================
 
-exports.getCustomerLedger = async (companyId, filters) => {
-
-  const { customerId, startDate, endDate } = filters;
-
+exports.getCustomerSalesDetails = async (companyId, customerId) => {
   const result = await pool.query(
     `
     SELECT
       s.id,
       s.created_at::date AS sale_date,
 
-      t.id AS trip_id,
+      c.name AS customer_name,
 
+      t.id AS trip_id,
       f.name AS farmer_name,
       u.name AS driver_name,
 
+      s.cage_number,
+      s.sell_type,
+      s.bird_count,
+      s.weight,
+      s.rate,
+
       s.total_amount,
+      s.payment_mode,
       s.cash_amount,
       s.upi_amount,
 
@@ -1371,79 +1377,20 @@ exports.getCustomerLedger = async (companyId, filters) => {
       ) AS pending
 
     FROM sales s
-
+    JOIN customers c ON c.id = s.customer_id
     JOIN trips t ON t.id = s.trip_id
-    JOIN farmers f ON f.id = t.farmer_id
+    JOIN farms fm ON fm.id = t.farm_id          -- ✅ NEW
+    JOIN farmers f ON f.id = fm.farmer_id      -- ✅ NEW
     JOIN users u ON u.id = t.driver_id
 
     WHERE t.company_id = $1
       AND s.customer_id = $2
 
-      AND ($3::date IS NULL OR s.created_at::date >= $3)
-      AND ($4::date IS NULL OR s.created_at::date <= $4)
-
     ORDER BY s.created_at DESC
-    `,
-    [
-      companyId,
-      customerId,
-      startDate,
-      endDate,
-    ]
-  );
-
-  return result.rows;
-};
-
-
-// =======================================================
-// CUSTOMER SALES DETAILS (LIKE TRIP SALES)
-// =======================================================
-
-exports.getCustomerSalesDetails = async (companyId, customerId) => {
-  const result = await pool.query(
-    `
-   SELECT
-  s.id,
-  s.created_at::date AS sale_date,
-
-  c.name AS customer_name,   -- ✅ ADD THIS
-
-  t.id AS trip_id,
-  f.name AS farmer_name,
-  u.name AS driver_name,
-
-  s.cage_number,
-  s.sell_type,
-  s.bird_count,
-  s.weight,
-  s.rate,
-
-  s.total_amount,
-  s.payment_mode,
-  s.cash_amount,
-  s.upi_amount,
-
-  (
-    s.total_amount -
-    (COALESCE(s.cash_amount,0) + COALESCE(s.upi_amount,0))
-  ) AS pending
-
-FROM sales s
-JOIN customers c ON c.id = s.customer_id   -- ✅ ADD JOIN
-JOIN trips t ON t.id = s.trip_id
-JOIN farmers f ON f.id = t.farmer_id
-JOIN users u ON u.id = t.driver_id
-
-WHERE t.company_id = $1
-  AND s.customer_id = $2
-
-ORDER BY s.created_at DESC;
-
-
     `,
     [companyId, customerId]
   );
 
   return result.rows;
 };
+

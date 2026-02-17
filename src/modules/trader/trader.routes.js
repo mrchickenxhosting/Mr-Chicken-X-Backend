@@ -97,12 +97,6 @@ router.get(
   traderController.getTripSalesDetails
 );
 
-router.post(
-  '/reports/customer-ledger',
-  authMiddleware,
-  traderController.getCustomerLedger
-);
-
 router.get(
   '/reports/customers/:customerId/sales',
   authMiddleware,

@@ -526,53 +526,6 @@ exports.getTripSalesDetails = async (req, res) => {
 };
 
 // ----------------------------------------
-// CUSTOMER LEDGER REPORT
-// ----------------------------------------
-
-exports.getCustomerLedger = async (req, res) => {
-  try {
-
-    const companyId = req.user.companyId;
-    const filters = req.body;
-
-    if (!filters.customerId) {
-      return res.status(400).json({
-        message: 'Customer is required'
-      });
-    }
-
-    const rows = await traderService.getCustomerLedger(companyId, filters);
-
-    // Summary Calculation
-    const summary = rows.reduce(
-      (acc, r) => {
-        acc.total_sales += Number(r.total_amount || 0);
-        acc.cash_received += Number(r.cash_amount || 0);
-        acc.upi_received += Number(r.upi_amount || 0);
-        acc.pending += Number(r.pending || 0);
-        return acc;
-      },
-      { total_sales: 0, cash_received: 0, upi_received: 0, pending: 0 }
-    );
-
-    res.json({
-      success: true,
-      summary,
-      count: rows.length,
-      rows
-    });
-
-  } catch (error) {
-    console.error('Customer Ledger Error:', error);
-
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Failed to load customer ledger'
-    });
-  }
-};
-
-// ----------------------------------------
 // CUSTOMER SALES DETAILS (DETAILED)
 // ----------------------------------------
 

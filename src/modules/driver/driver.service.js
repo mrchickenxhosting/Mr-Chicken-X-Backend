@@ -230,221 +230,262 @@ exports.completeTrip = async (user, tripId) => {
   };
 };
 
-  exports.getTripCages = async (user, tripId) => {
-    // 1️⃣ Validate trip ownership
-    const tripRes = await pool.query(
-      `SELECT id FROM trips WHERE id = $1
-  AND (driver_id = $2 OR lifter_id = $2)`,
-      [tripId, user.userId]
-    );
+exports.getTripCages = async (user, tripId) => {
+  const tripRes = await pool.query(
+    `SELECT id FROM trips 
+     WHERE id = $1
+     AND (driver_id = $2 OR lifter_id = $2)`,
+    [tripId, user.userId]
+  );
 
-    if (!tripRes.rows.length) {
-      throw new Error('Trip not found or not authorized');
-    }
+  if (!tripRes.rows.length) {
+    throw new Error('Trip not found or not authorized');
+  }
 
-    // 2️⃣ Get LIFTED totals per cage + color
-    const liftedRes = await pool.query(
-      `
-      SELECT
-        tc.cage_number,
-        tce.color,
-        SUM(tce.bird_count) AS lifted_birds,
-        SUM(tce.weight) AS lifted_weight
-      FROM trip_cages tc
-      JOIN trip_cage_entries tce ON tce.trip_cage_id = tc.id
-      WHERE tc.trip_id = $1
-      GROUP BY tc.cage_number, tce.color
-      ORDER BY tc.cage_number
-      `,
-      [tripId]
-    );
+  const res = await pool.query(
+    `
+    SELECT
+      tc.cage_number,
+      tce.color,
+      tce.bird_count,
+      tce.weight
+    FROM trip_cages tc
+    JOIN trip_cage_entries tce ON tce.trip_cage_id = tc.id
+    WHERE tc.trip_id = $1
+    ORDER BY tc.cage_number
+    `,
+    [tripId]
+  );
 
-    // 3️⃣ Get SOLD totals per cage (NO COLOR)
-    const soldRes = await pool.query(
-      `
-      SELECT
-        cage_number,
-        SUM(bird_count) AS sold_birds,
-        SUM(weight) AS sold_weight
-      FROM sales
-      WHERE trip_id = $1
-      GROUP BY cage_number
-      `,
-      [tripId]
-    );
+  const cageData = {};
 
-    // 4️⃣ Build SOLD map → cage
-    const soldMap = {};
-    for (const row of soldRes.rows) {
-      soldMap[row.cage_number] = {
-        birds: Number(row.sold_birds || 0),
-        weight: Number(row.sold_weight || 0),
-      };
-    }
+  for (const row of res.rows) {
+    const cageNo = row.cage_number;
+    const color = row.color || 'DEFAULT';
 
-    // 5️⃣ Build FINAL cageData
-const cageData = {};
+    if (!cageData[cageNo]) cageData[cageNo] = {};
 
-for (const row of liftedRes.rows) {
-  const cageNo = row.cage_number;
-  const color = row.color || 'DEFAULT';
-
-  const liftedBirds = Number(row.lifted_birds || 0);
-  const liftedWeight = Number(row.lifted_weight || 0);
-
-  const soldBirds = soldMap[cageNo]?.birds || 0;
-  const soldWeight = soldMap[cageNo]?.weight || 0;
-
-  const remainingBirds = Math.max(liftedBirds - soldBirds, 0);
-  const remainingWeight = Math.max(liftedWeight - soldWeight, 0);
-
-  if (!cageData[cageNo]) cageData[cageNo] = {};
-
-  cageData[cageNo][color] = [
-    {
-      chickens: remainingBirds,
-      weight: Number(remainingWeight.toFixed(2)),
-      original_chickens: liftedBirds,
-      original_weight: liftedWeight,
-    },
-  ];
-}
+    cageData[cageNo][color] = [
+      {
+        chickens: Number(row.bird_count || 0),
+        weight: Number(row.weight || 0),
+        original_chickens: null,
+        original_weight: null,
+      },
+    ];
+  }
 
   return cageData;
-  };
+};
+
 
 /* ======================
    3️⃣ SELL TO CUSTOMER
 ====================== */
 exports.sellToCustomer = async (user, tripId, data) => {
-  const {
-    customer_id,
-    cage_numbers,
-    sell_type,
-    bird_count,
-    weight,
-    rate,
-    total_amount,
-    payment_mode,
-    cash_amount = 0,
-    upi_amount = 0,
-  } = data;
+  const client = await pool.connect();
 
-  // ✅ VALIDATION
-  if (
-    !customer_id ||
-    !Array.isArray(cage_numbers) ||
-    cage_numbers.length === 0 ||
-    !sell_type ||
-    !rate ||
-    !payment_mode
-  ) {
-    throw new Error('Incomplete sale data');
-  }
+  try {
+    await client.query('BEGIN');
 
-  // ✅ CHECK TRIP
-  const tripRes = await pool.query(
-    `
-    SELECT *
-    FROM trips
-    WHERE id = $1
-      AND driver_id = $2
-      AND status = 'LIFTED'
-    `,
-    [tripId, user.userId]
-  );
-
-  if (!tripRes.rows.length) {
-    throw new Error('Trip not ready for selling');
-  }
-
-  // 🔥 Calculate per cage distribution
-    for (const cageNumber of cage_numbers) {
-
-  let birdsToSell;
-  let weightToSell;
-  let amountToSell;
-
-  if (sell_type === 'FULL') {
-
-    // 🔥 Fetch remaining cage totals
-    const cageTotals = await pool.query(
-      `
-      SELECT
-        SUM(e.bird_count) AS birds,
-        SUM(e.weight) AS weight
-      FROM trip_cages c
-      JOIN trip_cage_entries e ON e.trip_cage_id = c.id
-      WHERE c.trip_id = $1
-        AND c.cage_number = $2
-      `,
-      [tripId, cageNumber]
-    );
-
-    birdsToSell = Number(cageTotals.rows[0].birds || 0);
-    weightToSell = Number(cageTotals.rows[0].weight || 0);
-
-    amountToSell = weightToSell * Number(rate);
-
-  } else {
-    birdsToSell = Number(bird_count);
-    weightToSell = Number(weight);
-    amountToSell = Number(total_amount);
-  }
-
-  await pool.query(
-    `
-    INSERT INTO sales (
-      trip_id,
+    const {
       customer_id,
-      cage_number,
+      cage_numbers,
       sell_type,
       bird_count,
       weight,
       rate,
       total_amount,
       payment_mode,
-      cash_amount,
-      upi_amount
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-    `,
-    [
-      tripId,
-      customer_id,
-      cageNumber,
-      sell_type,
-      birdsToSell,
-      weightToSell,
-      rate,
-      amountToSell,
-      payment_mode,
-      cash_amount / cage_numbers.length,
-      upi_amount / cage_numbers.length,
-    ]
-  );
-}
+      cash_amount = 0,
+      upi_amount = 0,
+    } = data;
 
-  // ✅ UPDATE CUSTOMER OUTSTANDING (ONLY ONCE)
-  const pendingAmount =
-    Number(total_amount) -
-    (Number(cash_amount) + Number(upi_amount));
+    // ✅ VALIDATION
+    if (
+      !customer_id ||
+      !Array.isArray(cage_numbers) ||
+      cage_numbers.length === 0 ||
+      !sell_type ||
+      !rate ||
+      !payment_mode
+    ) {
+      throw new Error('Incomplete sale data');
+    }
 
-  if (pendingAmount > 0) {
-    await pool.query(
+    // ✅ CHECK TRIP
+    const tripRes = await client.query(
       `
-      UPDATE customers
-      SET outstanding = outstanding + $1
-      WHERE id = $2
+      SELECT *
+      FROM trips
+      WHERE id = $1
+        AND driver_id = $2
+        AND status = 'LIFTED'
+      FOR UPDATE
       `,
-      [pendingAmount, customer_id]
+      [tripId, user.userId]
     );
-  }
 
-  return {
-    message: 'Sale recorded successfully',
-  };
+    if (!tripRes.rows.length) {
+      throw new Error('Trip not ready for selling');
+    }
+
+    // 🔥 FETCH SELECTED CAGES WITH LOCK
+    const cageData = [];
+
+    for (const cageNumber of cage_numbers) {
+      const cageRes = await client.query(
+        `
+        SELECT c.id AS trip_cage_id,
+               c.cage_number,
+               e.id AS entry_id,
+               e.bird_count,
+               e.weight
+        FROM trip_cages c
+        JOIN trip_cage_entries e ON e.trip_cage_id = c.id
+        WHERE c.trip_id = $1
+          AND c.cage_number = $2
+        FOR UPDATE
+        `,
+        [tripId, cageNumber]
+      );
+
+      if (!cageRes.rows.length) {
+        throw new Error(`Cage ${cageNumber} not found`);
+      }
+
+      cageData.push(...cageRes.rows);
+    }
+
+    // 🔥 TOTAL AVAILABLE CHECK
+    const totalAvailableBirds = cageData.reduce(
+      (sum, row) => sum + Number(row.bird_count || 0),
+      0
+    );
+
+    if (sell_type === 'CUSTOM' && bird_count > totalAvailableBirds) {
+      throw new Error('Not enough birds available');
+    }
+
+    let birdsRemaining = Number(bird_count || 0);
+
+    // 🔥 Calculate avg weight per bird (CUSTOM only)
+    const avgWeightPerBird =
+      sell_type === 'CUSTOM'
+        ? Number(weight) / Number(bird_count)
+        : 0;
+
+    // 🔥 PROCESS CAGES
+    for (const row of cageData) {
+      let birdsToSell = 0;
+      let weightToSell = 0;
+
+      if (sell_type === 'FULL') {
+        birdsToSell = Number(row.bird_count);
+        weightToSell = Number(row.weight);
+      } else {
+        if (birdsRemaining <= 0) break;
+
+        birdsToSell = Math.min(row.bird_count, birdsRemaining);
+
+        weightToSell = Number(
+          (birdsToSell * avgWeightPerBird).toFixed(2)
+        );
+
+        birdsRemaining -= birdsToSell;
+      }
+
+      if (birdsToSell <= 0) continue;
+
+      const amountToSell = Number(
+        (weightToSell * Number(rate)).toFixed(2)
+      );
+
+      // 🔥 Proportional payment split
+      const proportionalCash =
+        total_amount > 0
+          ? (amountToSell / total_amount) * cash_amount
+          : 0;
+
+      const proportionalUpi =
+        total_amount > 0
+          ? (amountToSell / total_amount) * upi_amount
+          : 0;
+
+      // ✅ INSERT SALE
+      await client.query(
+        `
+        INSERT INTO sales (
+          trip_id,
+          customer_id,
+          cage_number,
+          sell_type,
+          bird_count,
+          weight,
+          rate,
+          total_amount,
+          payment_mode,
+          cash_amount,
+          upi_amount
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        `,
+        [
+          tripId,
+          customer_id,
+          row.cage_number,
+          sell_type,
+          birdsToSell,
+          weightToSell,
+          rate,
+          amountToSell,
+          payment_mode,
+          Number(proportionalCash.toFixed(2)),
+          Number(proportionalUpi.toFixed(2)),
+        ]
+      );
+
+      // ✅ DEDUCT STOCK
+      await client.query(
+        `
+        UPDATE trip_cage_entries
+        SET bird_count = bird_count - $1,
+            weight = weight - $2
+        WHERE id = $3
+        `,
+        [birdsToSell, weightToSell, row.entry_id]
+      );
+    }
+
+    // ✅ UPDATE CUSTOMER OUTSTANDING
+    const pendingAmount =
+      Number(total_amount) -
+      (Number(cash_amount) + Number(upi_amount));
+
+    if (pendingAmount > 0) {
+      await client.query(
+        `
+        UPDATE customers
+        SET outstanding = outstanding + $1
+        WHERE id = $2
+        `,
+        [pendingAmount, customer_id]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    return { message: 'Sale recorded successfully' };
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 };
+
+
 
 
 
