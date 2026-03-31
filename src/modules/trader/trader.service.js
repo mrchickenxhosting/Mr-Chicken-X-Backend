@@ -1352,6 +1352,7 @@ exports.getCustomerSalesDetails = async (companyId, customerId) => {
     `
     SELECT
       s.id,
+      s.created_at AS created_at,                  -- keep full timestamp
       s.created_at::date AS sale_date,
 
       c.name AS customer_name,
@@ -1378,13 +1379,15 @@ exports.getCustomerSalesDetails = async (companyId, customerId) => {
 
     FROM sales s
     JOIN customers c ON c.id = s.customer_id
-    JOIN trips t ON t.id = s.trip_id
-    JOIN farms fm ON fm.id = t.farm_id          -- ✅ NEW
-    JOIN farmers f ON f.id = fm.farmer_id      -- ✅ NEW
-    JOIN users u ON u.id = t.driver_id
 
-    WHERE t.company_id = $1
-      AND s.customer_id = $2
+    -- ✅ make joins safe
+    LEFT JOIN trips t ON t.id = s.trip_id
+    LEFT JOIN farms fm ON fm.id = t.farm_id
+    LEFT JOIN farmers f ON f.id = fm.farmer_id
+    LEFT JOIN users u ON u.id = t.driver_id
+
+    WHERE s.customer_id = $2
+      AND (t.company_id = $1 OR t.company_id IS NULL)
 
     ORDER BY s.created_at DESC
     `,
