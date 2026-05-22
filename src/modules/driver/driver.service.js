@@ -282,6 +282,218 @@ exports.getTripCages = async (user, tripId) => {
 /* ======================
    3️⃣ SELL TO CUSTOMER
 ====================== */
+  // exports.sellToCustomer = async (user, tripId, data) => {
+  //   const client = await pool.connect();
+
+  //   try {
+  //     await client.query('BEGIN');
+
+  //     const {
+  //       customer_id,
+  //       cage_numbers,
+  //       sell_type,
+  //       bird_count,
+  //       weight,
+  //       rate,
+  //       total_amount,
+  //       payment_mode,
+  //       cash_amount = 0,
+  //       upi_amount = 0,
+  //     } = data;
+
+  //     const isPaymentOnly =
+  //   Number(total_amount) > 0 &&
+  //   Number(bird_count) === 0 &&
+  //   Number(weight) === 0 &&
+  //   (!sell_type || cage_numbers?.length === 0);
+
+  //     // ✅ VALIDATION
+  // if (
+  //   !customer_id ||
+  //   !payment_mode ||
+  //   (!isPaymentOnly &&
+  //     (
+  //       !Array.isArray(cage_numbers) ||
+  //       cage_numbers.length === 0 ||
+  //       !sell_type ||
+  //       !rate
+  //     ))
+  // ) {
+  //   throw new Error('Incomplete sale data');
+  // }
+
+  //     // ✅ CHECK TRIP
+  //     const tripRes = await client.query(
+  //       `
+  //       SELECT *
+  //       FROM trips
+  //       WHERE id = $1
+  //         AND driver_id = $2
+  //         AND status = 'LIFTED'
+  //       FOR UPDATE
+  //       `,
+  //       [tripId, user.userId]
+  //     );
+
+  //     if (!tripRes.rows.length) {
+  //       throw new Error('Trip not ready for selling');
+  //     }
+
+  //     // 🔥 FETCH SELECTED CAGES WITH LOCK
+  //     const cageData = [];
+
+  //     for (const cageNumber of cage_numbers) {
+  //       const cageRes = await client.query(
+  //         `
+  //         SELECT c.id AS trip_cage_id,
+  //               c.cage_number,
+  //               e.id AS entry_id,
+  //               e.bird_count,
+  //               e.weight
+  //         FROM trip_cages c
+  //         JOIN trip_cage_entries e ON e.trip_cage_id = c.id
+  //         WHERE c.trip_id = $1
+  //           AND c.cage_number = $2
+  //         FOR UPDATE
+  //         `,
+  //         [tripId, cageNumber]
+  //       );
+
+  //       if (!cageRes.rows.length) {
+  //         throw new Error(`Cage ${cageNumber} not found`);
+  //       }
+
+  //       cageData.push(...cageRes.rows);
+  //     }
+
+  //     // 🔥 TOTAL AVAILABLE CHECK
+  //     const totalAvailableBirds = cageData.reduce(
+  //       (sum, row) => sum + Number(row.bird_count || 0),
+  //       0
+  //     );
+
+  //     if (sell_type === 'CUSTOM' && bird_count > totalAvailableBirds) {
+  //       throw new Error('Not enough birds available');
+  //     }
+
+  //     let birdsRemaining = Number(bird_count || 0);
+
+  //     // 🔥 Calculate avg weight per bird (CUSTOM only)
+  //     const avgWeightPerBird =
+  //       sell_type === 'CUSTOM'
+  //         ? Number(weight) / Number(bird_count)
+  //         : 0;
+
+  //     // 🔥 PROCESS CAGES
+  //     for (const row of cageData) {
+  //       let birdsToSell = 0;
+  //       let weightToSell = 0;
+
+  //       if (sell_type === 'FULL') {
+  //         birdsToSell = Number(row.bird_count);
+  //         weightToSell = Number(row.weight);
+  //       } else {
+  //         if (birdsRemaining <= 0) break;
+
+  //         birdsToSell = Math.min(row.bird_count, birdsRemaining);
+
+  //         weightToSell = Number(
+  //           (birdsToSell * avgWeightPerBird).toFixed(2)
+  //         );
+
+  //         birdsRemaining -= birdsToSell;
+  //       }
+
+  //       if (birdsToSell <= 0) continue;
+
+  //       const amountToSell = Number(
+  //         (weightToSell * Number(rate)).toFixed(2)
+  //       );
+
+  //       // 🔥 Proportional payment split
+  //       const proportionalCash =
+  //         total_amount > 0
+  //           ? (amountToSell / total_amount) * cash_amount
+  //           : 0;
+
+  //       const proportionalUpi =
+  //         total_amount > 0
+  //           ? (amountToSell / total_amount) * upi_amount
+  //           : 0;
+
+  //       // ✅ INSERT SALE
+  //       await client.query(
+  //         `
+  //         INSERT INTO sales (
+  //           trip_id,
+  //           customer_id,
+  //           cage_number,
+  //           sell_type,
+  //           bird_count,
+  //           weight,
+  //           rate,
+  //           total_amount,
+  //           payment_mode,
+  //           cash_amount,
+  //           upi_amount
+  //         )
+  //         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+  //         `,
+  //         [
+  //           tripId,
+  //           customer_id,
+  //           row.cage_number,
+  //           sell_type,
+  //           birdsToSell,
+  //           weightToSell,
+  //           rate,
+  //           amountToSell,
+  //           payment_mode,
+  //           Number(proportionalCash.toFixed(2)),
+  //           Number(proportionalUpi.toFixed(2)),
+  //         ]
+  //       );
+
+  //       // ✅ DEDUCT STOCK
+  //       await client.query(
+  //         `
+  //         UPDATE trip_cage_entries
+  //         SET bird_count = bird_count - $1,
+  //             weight = weight - $2
+  //         WHERE id = $3
+  //         `,
+  //         [birdsToSell, weightToSell, row.entry_id]
+  //       );
+  //     }
+
+  //     // ✅ UPDATE CUSTOMER OUTSTANDING
+  //     const pendingAmount =
+  //       Number(total_amount) -
+  //       (Number(cash_amount) + Number(upi_amount));
+
+  //     if (pendingAmount > 0) {
+  //       await client.query(
+  //         `
+  //         UPDATE customers
+  //         SET outstanding = outstanding + $1
+  //         WHERE id = $2
+  //         `,
+  //         [pendingAmount, customer_id]
+  //       );
+  //     }
+
+  //     await client.query('COMMIT');
+
+  //     return { message: 'Sale recorded successfully' };
+
+  //   } catch (error) {
+  //     await client.query('ROLLBACK');
+  //     throw error;
+  //   } finally {
+  //     client.release();
+  //   }
+  // };
+
 exports.sellToCustomer = async (user, tripId, data) => {
   const client = await pool.connect();
 
@@ -301,28 +513,40 @@ exports.sellToCustomer = async (user, tripId, data) => {
       upi_amount = 0,
     } = data;
 
+    // =========================================================
+    // ✅ PAYMENT ONLY CHECK
+    // =========================================================
+
     const isPaymentOnly =
-  Number(total_amount) > 0 &&
-  Number(bird_count) === 0 &&
-  Number(weight) === 0 &&
-  (!sell_type || cage_numbers?.length === 0);
+      Number(total_amount) > 0 &&
+      Number(bird_count) === 0 &&
+      Number(weight) === 0 &&
+      (!sell_type || cage_numbers?.length === 0);
 
+    // =========================================================
     // ✅ VALIDATION
-if (
-  !customer_id ||
-  !payment_mode ||
-  (!isPaymentOnly &&
-    (
-      !Array.isArray(cage_numbers) ||
-      cage_numbers.length === 0 ||
-      !sell_type ||
-      !rate
-    ))
-) {
-  throw new Error('Incomplete sale data');
-}
+    // =========================================================
 
+    if (
+      !customer_id ||
+      !payment_mode ||
+      (
+        !isPaymentOnly &&
+        (
+          !Array.isArray(cage_numbers) ||
+          cage_numbers.length === 0 ||
+          !sell_type ||
+          !rate
+        )
+      )
+    ) {
+      throw new Error('Incomplete sale data');
+    }
+
+    // =========================================================
     // ✅ CHECK TRIP
+    // =========================================================
+
     const tripRes = await client.query(
       `
       SELECT *
@@ -339,89 +563,17 @@ if (
       throw new Error('Trip not ready for selling');
     }
 
-    // 🔥 FETCH SELECTED CAGES WITH LOCK
-    const cageData = [];
+    // =========================================================
+    // ✅ PAYMENT ONLY FLOW
+    // =========================================================
 
-    for (const cageNumber of cage_numbers) {
-      const cageRes = await client.query(
-        `
-        SELECT c.id AS trip_cage_id,
-               c.cage_number,
-               e.id AS entry_id,
-               e.bird_count,
-               e.weight
-        FROM trip_cages c
-        JOIN trip_cage_entries e ON e.trip_cage_id = c.id
-        WHERE c.trip_id = $1
-          AND c.cage_number = $2
-        FOR UPDATE
-        `,
-        [tripId, cageNumber]
-      );
+    if (isPaymentOnly) {
 
-      if (!cageRes.rows.length) {
-        throw new Error(`Cage ${cageNumber} not found`);
-      }
+      const paymentAmount =
+        Number(cash_amount || 0) +
+        Number(upi_amount || 0);
 
-      cageData.push(...cageRes.rows);
-    }
-
-    // 🔥 TOTAL AVAILABLE CHECK
-    const totalAvailableBirds = cageData.reduce(
-      (sum, row) => sum + Number(row.bird_count || 0),
-      0
-    );
-
-    if (sell_type === 'CUSTOM' && bird_count > totalAvailableBirds) {
-      throw new Error('Not enough birds available');
-    }
-
-    let birdsRemaining = Number(bird_count || 0);
-
-    // 🔥 Calculate avg weight per bird (CUSTOM only)
-    const avgWeightPerBird =
-      sell_type === 'CUSTOM'
-        ? Number(weight) / Number(bird_count)
-        : 0;
-
-    // 🔥 PROCESS CAGES
-    for (const row of cageData) {
-      let birdsToSell = 0;
-      let weightToSell = 0;
-
-      if (sell_type === 'FULL') {
-        birdsToSell = Number(row.bird_count);
-        weightToSell = Number(row.weight);
-      } else {
-        if (birdsRemaining <= 0) break;
-
-        birdsToSell = Math.min(row.bird_count, birdsRemaining);
-
-        weightToSell = Number(
-          (birdsToSell * avgWeightPerBird).toFixed(2)
-        );
-
-        birdsRemaining -= birdsToSell;
-      }
-
-      if (birdsToSell <= 0) continue;
-
-      const amountToSell = Number(
-        (weightToSell * Number(rate)).toFixed(2)
-      );
-
-      // 🔥 Proportional payment split
-      const proportionalCash =
-        total_amount > 0
-          ? (amountToSell / total_amount) * cash_amount
-          : 0;
-
-      const proportionalUpi =
-        total_amount > 0
-          ? (amountToSell / total_amount) * upi_amount
-          : 0;
-
-      // ✅ INSERT SALE
+      // ✅ INSERT PAYMENT ENTRY
       await client.query(
         `
         INSERT INTO sales (
@@ -437,7 +589,188 @@ if (
           cash_amount,
           upi_amount
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        VALUES (
+          $1,$2,0,'PAYMENT',0,0,0,$3,$4,$5,$6
+        )
+        `,
+        [
+          tripId,
+          customer_id,
+          paymentAmount,
+          payment_mode,
+          Number(cash_amount || 0),
+          Number(upi_amount || 0),
+        ]
+      );
+
+      // ✅ DEDUCT CUSTOMER OUTSTANDING
+      await client.query(
+        `
+        UPDATE customers
+        SET outstanding = GREATEST(
+          outstanding - $1,
+          0
+        )
+        WHERE id = $2
+        `,
+        [paymentAmount, customer_id]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        message: 'Payment recorded successfully'
+      };
+    }
+
+    // =========================================================
+    // 🔥 FETCH SELECTED CAGES WITH LOCK
+    // =========================================================
+
+    const cageData = [];
+
+    for (const cageNumber of cage_numbers) {
+
+      const cageRes = await client.query(
+        `
+        SELECT
+          c.id AS trip_cage_id,
+          c.cage_number,
+          e.id AS entry_id,
+          e.bird_count,
+          e.weight
+        FROM trip_cages c
+        JOIN trip_cage_entries e
+          ON e.trip_cage_id = c.id
+        WHERE c.trip_id = $1
+          AND c.cage_number = $2
+        FOR UPDATE
+        `,
+        [tripId, cageNumber]
+      );
+
+      if (!cageRes.rows.length) {
+        throw new Error(`Cage ${cageNumber} not found`);
+      }
+
+      cageData.push(...cageRes.rows);
+    }
+
+    // =========================================================
+    // 🔥 TOTAL AVAILABLE CHECK
+    // =========================================================
+
+    const totalAvailableBirds = cageData.reduce(
+      (sum, row) => sum + Number(row.bird_count || 0),
+      0
+    );
+
+    if (
+      sell_type === 'CUSTOM' &&
+      Number(bird_count) > totalAvailableBirds
+    ) {
+      throw new Error('Not enough birds available');
+    }
+
+    let birdsRemaining = Number(bird_count || 0);
+
+    // =========================================================
+    // 🔥 AVG WEIGHT PER BIRD
+    // =========================================================
+
+    const avgWeightPerBird =
+      sell_type === 'CUSTOM'
+        ? Number(weight) / Number(bird_count)
+        : 0;
+
+    // =========================================================
+    // 🔥 PROCESS CAGES
+    // =========================================================
+
+    for (const row of cageData) {
+
+      let birdsToSell = 0;
+      let weightToSell = 0;
+
+      // =====================================================
+      // FULL CAGE SELL
+      // =====================================================
+
+      if (sell_type === 'FULL') {
+
+        birdsToSell = Number(row.bird_count);
+        weightToSell = Number(row.weight);
+
+      } else {
+
+        // ===================================================
+        // CUSTOM SELL
+        // ===================================================
+
+        if (birdsRemaining <= 0) break;
+
+        birdsToSell = Math.min(
+          Number(row.bird_count),
+          birdsRemaining
+        );
+
+        weightToSell = Number(
+          (
+            birdsToSell * avgWeightPerBird
+          ).toFixed(2)
+        );
+
+        birdsRemaining -= birdsToSell;
+      }
+
+      if (birdsToSell <= 0) continue;
+
+      // =====================================================
+      // CALCULATE SALE AMOUNT
+      // =====================================================
+
+      const amountToSell = Number(
+        (
+          weightToSell * Number(rate)
+        ).toFixed(2)
+      );
+
+      // =====================================================
+      // 🔥 PROPORTIONAL PAYMENT SPLIT
+      // =====================================================
+
+      const proportionalCash =
+        total_amount > 0
+          ? (amountToSell / total_amount) * cash_amount
+          : 0;
+
+      const proportionalUpi =
+        total_amount > 0
+          ? (amountToSell / total_amount) * upi_amount
+          : 0;
+
+      // =====================================================
+      // ✅ INSERT SALE
+      // =====================================================
+
+      await client.query(
+        `
+        INSERT INTO sales (
+          trip_id,
+          customer_id,
+          cage_number,
+          sell_type,
+          bird_count,
+          weight,
+          rate,
+          total_amount,
+          payment_mode,
+          cash_amount,
+          upi_amount
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+        )
         `,
         [
           tripId,
@@ -454,7 +787,10 @@ if (
         ]
       );
 
+      // =====================================================
       // ✅ DEDUCT STOCK
+      // =====================================================
+
       await client.query(
         `
         UPDATE trip_cage_entries
@@ -462,16 +798,27 @@ if (
             weight = weight - $2
         WHERE id = $3
         `,
-        [birdsToSell, weightToSell, row.entry_id]
+        [
+          birdsToSell,
+          weightToSell,
+          row.entry_id
+        ]
       );
     }
 
+    // =========================================================
     // ✅ UPDATE CUSTOMER OUTSTANDING
+    // =========================================================
+
     const pendingAmount =
       Number(total_amount) -
-      (Number(cash_amount) + Number(upi_amount));
+      (
+        Number(cash_amount) +
+        Number(upi_amount)
+      );
 
     if (pendingAmount > 0) {
+
       await client.query(
         `
         UPDATE customers
@@ -484,17 +831,20 @@ if (
 
     await client.query('COMMIT');
 
-    return { message: 'Sale recorded successfully' };
+    return {
+      message: 'Sale recorded successfully'
+    };
 
   } catch (error) {
+
     await client.query('ROLLBACK');
     throw error;
+
   } finally {
+
     client.release();
   }
 };
-
-
 
 
 
