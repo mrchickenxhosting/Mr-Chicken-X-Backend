@@ -301,17 +301,26 @@ exports.sellToCustomer = async (user, tripId, data) => {
       upi_amount = 0,
     } = data;
 
+    const isPaymentOnly =
+  Number(total_amount) > 0 &&
+  Number(bird_count) === 0 &&
+  Number(weight) === 0 &&
+  (!sell_type || cage_numbers?.length === 0);
+
     // ✅ VALIDATION
-    if (
-      !customer_id ||
+if (
+  !customer_id ||
+  !payment_mode ||
+  (!isPaymentOnly &&
+    (
       !Array.isArray(cage_numbers) ||
       cage_numbers.length === 0 ||
       !sell_type ||
-      !rate ||
-      !payment_mode
-    ) {
-      throw new Error('Incomplete sale data');
-    }
+      !rate
+    ))
+) {
+  throw new Error('Incomplete sale data');
+}
 
     // ✅ CHECK TRIP
     const tripRes = await client.query(
