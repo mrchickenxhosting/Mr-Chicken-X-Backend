@@ -1235,6 +1235,75 @@ exports.getSalesReport = async (companyId, filters) => {
 };
 
 
+  // exports.getTripReport = async (companyId, filters) => {
+  //   const {
+  //     startDate = null,
+  //     endDate = null,
+  //     farmerId = null,
+  //     driverId = null,
+  //   } = filters || {};
+
+  //   const result = await pool.query(
+  //     `
+  //     SELECT
+  //       t.id AS trip_id,
+  //       t.trip_date,
+  //       t.total_birds,
+
+  //       fr.name AS farmer_name,
+  //       u.name AS driver_name,
+
+  //       COALESCE(SUM(s.total_amount),0) AS total_sales,
+  //       COALESCE(SUM(s.cash_amount),0) AS cash_received,
+  //       COALESCE(SUM(s.upi_amount),0) AS upi_received,
+
+  //       COALESCE(
+  //         SUM(s.total_amount) -
+  //         SUM(COALESCE(s.cash_amount,0) + COALESCE(s.upi_amount,0)),
+  //         0
+  //       ) AS pending_amount
+
+  //     FROM trips t
+
+  //     LEFT JOIN farms fa ON fa.id = t.farm_id
+  //     LEFT JOIN farmers fr ON fr.id = fa.farmer_id
+  //     LEFT JOIN users u ON u.id = t.driver_id
+  //     LEFT JOIN sales s ON s.trip_id = t.id
+
+  //     WHERE t.company_id = $1
+
+  //       AND ($2::date IS NULL OR t.trip_date >= $2)
+  //       AND ($3::date IS NULL OR t.trip_date <= $3)
+
+  //       AND ($4::int IS NULL OR fr.id = $4)
+  //       AND ($5::int IS NULL OR t.driver_id = $5)
+
+  //     GROUP BY
+  //       t.id,
+  //       t.trip_date,
+  //       t.total_birds,
+  //       fr.name,
+  //       u.name
+
+  //     ORDER BY t.trip_date DESC
+  //     `,
+  //     [
+  //       companyId,
+  //       startDate,
+  //       endDate,
+  //       farmerId,
+  //       driverId,
+  //     ]
+  //   );
+
+  //   return result.rows;
+  // };
+
+
+// =======================================================
+// 2️⃣ SINGLE TRIP SALES DETAILS (EXPAND VIEW)
+// =======================================================
+
 exports.getTripReport = async (companyId, filters) => {
   const {
     startDate = null,
@@ -1253,28 +1322,72 @@ exports.getTripReport = async (companyId, filters) => {
       fr.name AS farmer_name,
       u.name AS driver_name,
 
-      COALESCE(SUM(s.total_amount),0) AS total_sales,
-      COALESCE(SUM(s.cash_amount),0) AS cash_received,
-      COALESCE(SUM(s.upi_amount),0) AS upi_received,
+      COALESCE(SUM(s.total_amount), 0) AS total_sales,
+      COALESCE(SUM(s.cash_amount), 0) AS cash_received,
+      COALESCE(SUM(s.upi_amount), 0) AS upi_received,
 
       COALESCE(
         SUM(s.total_amount) -
-        SUM(COALESCE(s.cash_amount,0) + COALESCE(s.upi_amount,0)),
+        SUM(COALESCE(s.cash_amount, 0) + COALESCE(s.upi_amount, 0)),
         0
-      ) AS pending_amount
+      ) AS pending_amount,
+
+      COALESCE(SUM(s.weight), 0) AS total_weight,
+
+      COALESCE(MAX(e.diesel_expense), 0) AS diesel_expense,
+      COALESCE(MAX(e.driver_expense), 0) AS driver_expense,
+      COALESCE(MAX(e.other_expense), 0) AS other_expense,
+
+      COALESCE(MAX(e.purchase_rate_per_kg), 0) AS purchase_rate_per_kg,
+
+      MAX(e.created_at) AS expense_created_at,
+
+      (
+        COALESCE(SUM(s.weight), 0) *
+        COALESCE(MAX(e.purchase_rate_per_kg), 0)
+      ) AS purchase_cost,
+
+      (
+        COALESCE(MAX(e.diesel_expense), 0) +
+        COALESCE(MAX(e.driver_expense), 0) +
+        COALESCE(MAX(e.other_expense), 0)
+      ) AS total_expense,
+
+      (
+        COALESCE(SUM(s.total_amount), 0)
+        -
+        (
+          COALESCE(SUM(s.weight), 0) *
+          COALESCE(MAX(e.purchase_rate_per_kg), 0)
+        )
+        -
+        (
+          COALESCE(MAX(e.diesel_expense), 0) +
+          COALESCE(MAX(e.driver_expense), 0) +
+          COALESCE(MAX(e.other_expense), 0)
+        )
+      ) AS profit_loss
 
     FROM trips t
 
-    LEFT JOIN farms fa ON fa.id = t.farm_id
-    LEFT JOIN farmers fr ON fr.id = fa.farmer_id
-    LEFT JOIN users u ON u.id = t.driver_id
-    LEFT JOIN sales s ON s.trip_id = t.id
+    LEFT JOIN farms fa
+      ON fa.id = t.farm_id
+
+    LEFT JOIN farmers fr
+      ON fr.id = fa.farmer_id
+
+    LEFT JOIN users u
+      ON u.id = t.driver_id
+
+    LEFT JOIN sales s
+      ON s.trip_id = t.id
+
+    LEFT JOIN expenses e
+      ON e.trip_id = t.id
 
     WHERE t.company_id = $1
-
       AND ($2::date IS NULL OR t.trip_date >= $2)
       AND ($3::date IS NULL OR t.trip_date <= $3)
-
       AND ($4::int IS NULL OR fr.id = $4)
       AND ($5::int IS NULL OR t.driver_id = $5)
 
@@ -1298,12 +1411,6 @@ exports.getTripReport = async (companyId, filters) => {
 
   return result.rows;
 };
-
-
-// =======================================================
-// 2️⃣ SINGLE TRIP SALES DETAILS (EXPAND VIEW)
-// =======================================================
-
 exports.getTripSalesDetails = async (tripId) => {
 
   const result = await pool.query(
