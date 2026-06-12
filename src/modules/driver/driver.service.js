@@ -810,24 +810,28 @@ exports.sellToCustomer = async (user, tripId, data) => {
     // ✅ UPDATE CUSTOMER OUTSTANDING
     // =========================================================
 
-    const pendingAmount =
-      Number(total_amount) -
-      (
-        Number(cash_amount) +
-        Number(upi_amount)
-      );
+    const paymentReceived =
+  Number(cash_amount || 0) +
+  Number(upi_amount || 0);
 
-    if (pendingAmount > 0) {
+const pendingAmount =
+  Number(total_amount) - paymentReceived;
 
-      await client.query(
-        `
-        UPDATE customers
-        SET outstanding = outstanding + $1
-        WHERE id = $2
-        `,
-        [pendingAmount, customer_id]
-      );
-    }
+await client.query(
+  `
+  UPDATE customers
+  SET outstanding = GREATEST(
+    outstanding + $1 - $2,
+    0
+  )
+  WHERE id = $3
+  `,
+  [
+    pendingAmount,
+    paymentReceived,
+    customer_id
+  ]
+);
 
     await client.query('COMMIT');
 
