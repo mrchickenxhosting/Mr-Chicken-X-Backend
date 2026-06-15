@@ -18,6 +18,13 @@ router.patch('/drivers/:id',authMiddleware,traderController.updateDrivers);
 router.patch('/drivers/:id/status', authMiddleware, traderController.updateDriverStatus);
 router.delete('/drivers/:id',authMiddleware,traderController.deleteDrivers);
 
+/* ================= CARS ================= */
+router.post('/cars', authMiddleware, traderController.createCar);
+router.get('/cars', authMiddleware, traderController.getCars);
+router.put('/cars/:id',authMiddleware,traderController.updateCars);
+router.patch('/cars/:id/status', authMiddleware, traderController.updateCarStatus);
+router.delete('/cars/:id',authMiddleware,traderController.deleteCars);
+
 /* ================= LIFTER ================= */
 router.post('/lifters', authMiddleware, traderController.createLifter);
 router.get('/lifters', authMiddleware, traderController.getLifters);

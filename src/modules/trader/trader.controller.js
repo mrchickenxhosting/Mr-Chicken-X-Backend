@@ -105,6 +105,56 @@ exports.deleteDrivers = async (req, res) => {
   }
 };
 
+/* ========= CARS ========= */
+exports.createCar = async (req, res) => {
+  try {
+    res.status(201).json(
+      await traderService.createCar(req.user.companyId, req.body)
+    );
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+exports.getCars = async (req, res) => {
+  try {
+    res.json(await traderService.getCars(req.user.companyId));
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+exports.updateCarStatus = async (req, res) => {
+  try {
+    res.json(await traderService.updateCarStatus(
+      req.user.companyId, req.params.id, req.body.status
+    ));
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+exports.updateCars = async (req, res) => {
+  try {
+    res.json(
+      await traderService.updateCar(
+        req.user.companyId,
+        req.params.id,
+        req.body
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
+exports.deleteCars = async (req, res) => {
+  try {
+    res.json(
+      await traderService.deleteCar(
+        req.user.companyId,
+        req.params.id
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
 /* ========= LIFTERS ========= */
 exports.createLifter = async (req, res) => {
   try {

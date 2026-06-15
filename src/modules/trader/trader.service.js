@@ -22,7 +22,7 @@ exports.createUser = async (companyId, { name, mobile, password }, role) => {
   return { message: `${role} created`, user: res.rows[0] };
 };
 
-exports.getUsers = async (companyId, role) => {
+  exports.getUsers = async (companyId, role) => {
   const res = await pool.query(`
     SELECT id,name,mobile,status,created_at
     FROM users
@@ -99,6 +99,190 @@ exports.deleteUser = async (companyId, userId, role) => {
 
   return {
     message: `${role} deleted successfully`,
+  };
+};
+
+/* ========= CARS ========= */
+
+exports.createCar = async (
+  companyId,
+  { car_number, model_name, max_capacity_cages }
+) => {
+  if (!car_number || !model_name || !max_capacity_cages) {
+    throw new Error('All fields required');
+  }
+
+  const exists = await pool.query(
+    `
+    SELECT id
+    FROM car_master
+    WHERE company_id = $1
+      AND car_number = $2
+    `,
+    [companyId, car_number]
+  );
+
+  if (exists.rows.length) {
+    throw new Error('Car number already exists');
+  }
+
+  const res = await pool.query(
+    `
+    INSERT INTO car_master
+    (
+      company_id,
+      car_number,
+      model_name,
+      max_capacity_cages
+    )
+    VALUES ($1,$2,$3,$4)
+    RETURNING *
+    `,
+    [companyId, car_number, model_name, max_capacity_cages]
+  );
+
+  return {
+    message: 'Car created successfully',
+    car: res.rows[0],
+  };
+};
+
+exports.getCars = async (companyId) => {
+  const res = await pool.query(
+    `
+    SELECT
+      id,
+      car_number,
+      model_name,
+      max_capacity_cages,
+      is_active,
+      created_at
+    FROM car_master
+    WHERE company_id = $1
+    ORDER BY created_at DESC
+    `,
+    [companyId]
+  );
+
+  return res.rows;
+};
+
+exports.updateCarStatus = async (
+  companyId,
+  carId,
+  is_active
+) => {
+  if (typeof is_active !== 'boolean') {
+    throw new Error('Invalid status');
+  }
+
+  const res = await pool.query(
+    `
+    UPDATE car_master
+    SET is_active = $1
+    WHERE id = $2
+      AND company_id = $3
+    RETURNING id
+    `,
+    [is_active, carId, companyId]
+  );
+
+  if (!res.rows.length) {
+    throw new Error('Car not found');
+  }
+
+  return {
+    message: `Car ${is_active ? 'enabled' : 'disabled'} successfully`,
+  };
+};
+
+exports.updateCar = async (
+  companyId,
+  carId,
+  data
+) => {
+  const {
+    car_number,
+    model_name,
+    max_capacity_cages,
+  } = data;
+
+  if (
+    !car_number &&
+    !model_name &&
+    max_capacity_cages === undefined
+  ) {
+    throw new Error('Nothing to update');
+  }
+
+  if (car_number) {
+    const exists = await pool.query(
+      `
+      SELECT id
+      FROM car_master
+      WHERE company_id = $1
+        AND car_number = $2
+        AND id <> $3
+      `,
+      [companyId, car_number, carId]
+    );
+
+    if (exists.rows.length) {
+      throw new Error('Car number already exists');
+    }
+  }
+
+  const res = await pool.query(
+    `
+    UPDATE car_master
+    SET
+      car_number = COALESCE($1, car_number),
+      model_name = COALESCE($2, model_name),
+      max_capacity_cages = COALESCE($3, max_capacity_cages),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $4
+      AND company_id = $5
+    RETURNING *
+    `,
+    [
+      car_number,
+      model_name,
+      max_capacity_cages,
+      carId,
+      companyId,
+    ]
+  );
+
+  if (!res.rows.length) {
+    throw new Error('Car not found');
+  }
+
+  return {
+    message: 'Car updated successfully',
+    car: res.rows[0],
+  };
+};
+
+exports.deleteCar = async (
+  companyId,
+  carId
+) => {
+  const res = await pool.query(
+    `
+    DELETE FROM car_master
+    WHERE id = $1
+      AND company_id = $2
+    RETURNING id
+    `,
+    [carId, companyId]
+  );
+
+  if (!res.rows.length) {
+    throw new Error('Car not found');
+  }
+
+  return {
+    message: 'Car deleted successfully',
   };
 };
 
@@ -956,72 +1140,280 @@ exports.getTripExpenses = async (companyId, tripId) => {
 exports.getDashboard = async (companyId) => {
   const [
     countsResult,
+    dashboardStatsResult,
     weeklySalesResult,
     paymentSplitResult,
     tripStatusResult,
+    topPendingCustomersResult,
+    topDriversResult,
   ] = await Promise.all([
+
     // ===================== SUMMARY COUNTS =====================
     pool.query(`
       SELECT
-        (SELECT COUNT(*) FROM users WHERE company_id = $1 AND role = 'DRIVER') AS total_drivers,
-        (SELECT COUNT(*) FROM farmers WHERE company_id = $1) AS total_farmers,
-        (SELECT COUNT(*) FROM customers WHERE company_id = $1) AS total_customers,
-        (SELECT COUNT(*) FROM trips WHERE company_id = $1 AND status != 'CLOSED') AS active_trips
+        (SELECT COUNT(*) FROM users
+          WHERE company_id = $1
+          AND role = 'DRIVER') AS total_drivers,
+
+        (SELECT COUNT(*)
+          FROM farmers
+          WHERE company_id = $1) AS total_farmers,
+
+        (SELECT COUNT(*)
+          FROM customers
+          WHERE company_id = $1) AS total_customers,
+
+        (SELECT COUNT(*)
+          FROM trips
+          WHERE company_id = $1
+          AND status != 'CLOSED') AS active_trips
+    `, [companyId]),
+
+    // ===================== DASHBOARD STATS =====================
+    pool.query(`
+      SELECT
+
+        -- Today's Sales
+        COALESCE(
+          SUM(
+            CASE
+              WHEN s.created_at::date = CURRENT_DATE
+              THEN s.total_amount
+              ELSE 0
+            END
+          ),
+          0
+        ) AS today_sales,
+
+        -- Today's Collection
+        COALESCE(
+          SUM(
+            CASE
+              WHEN s.created_at::date = CURRENT_DATE
+              THEN COALESCE(s.cash_amount,0)
+                   + COALESCE(s.upi_amount,0)
+              ELSE 0
+            END
+          ),
+          0
+        ) AS today_collection,
+
+        -- Today's Pending
+        COALESCE(
+          SUM(
+            CASE
+              WHEN s.created_at::date = CURRENT_DATE
+              THEN
+                s.total_amount -
+                (
+                  COALESCE(s.cash_amount,0)
+                  + COALESCE(s.upi_amount,0)
+                )
+              ELSE 0
+            END
+          ),
+          0
+        ) AS today_pending,
+
+        -- Birds Sold Today
+        COALESCE(
+          SUM(
+            CASE
+              WHEN s.created_at::date = CURRENT_DATE
+              THEN COALESCE(s.bird_count,0)
+              ELSE 0
+            END
+          ),
+          0
+        ) AS birds_sold_today,
+
+        -- Total Pending
+        COALESCE(
+          SUM(
+            s.total_amount -
+            (
+              COALESCE(s.cash_amount,0)
+              + COALESCE(s.upi_amount,0)
+            )
+          ),
+          0
+        ) AS total_pending
+
+      FROM sales s
+      JOIN trips t
+        ON t.id = s.trip_id
+
+      WHERE t.company_id = $1
     `, [companyId]),
 
     // ===================== WEEKLY SALES =====================
     pool.query(`
       SELECT
         DATE(s.created_at) AS sale_date,
-        SUM(s.total_amount) AS total_sales,
-        SUM(COALESCE(s.cash_amount, 0) + COALESCE(s.upi_amount, 0)) AS total_collected
+
+        COALESCE(SUM(s.total_amount),0) AS total_sales,
+
+        COALESCE(
+          SUM(
+            COALESCE(s.cash_amount,0)
+            + COALESCE(s.upi_amount,0)
+          ),
+          0
+        ) AS total_collected
+
       FROM sales s
-      JOIN trips t ON t.id = s.trip_id
+
+      JOIN trips t
+        ON t.id = s.trip_id
+
       WHERE t.company_id = $1
         AND s.created_at >= CURRENT_DATE - INTERVAL '7 days'
+
       GROUP BY DATE(s.created_at)
+
       ORDER BY sale_date
     `, [companyId]),
 
     // ===================== PAYMENT SPLIT =====================
     pool.query(`
-      SELECT 'CASH' AS payment_mode,
-             SUM(COALESCE(s.cash_amount, 0)) AS total_amount
+      SELECT
+        'CASH' AS payment_mode,
+        COALESCE(SUM(s.cash_amount),0) AS total_amount
+
       FROM sales s
       JOIN trips t ON t.id = s.trip_id
+
       WHERE t.company_id = $1
 
       UNION ALL
 
-      SELECT 'UPI' AS payment_mode,
-             SUM(COALESCE(s.upi_amount, 0)) AS total_amount
+      SELECT
+        'UPI' AS payment_mode,
+        COALESCE(SUM(s.upi_amount),0) AS total_amount
+
       FROM sales s
       JOIN trips t ON t.id = s.trip_id
+
       WHERE t.company_id = $1
     `, [companyId]),
 
     // ===================== TRIP STATUS =====================
     pool.query(`
-  SELECT
-    status,
-    COUNT(*) AS count,
-    MAX(
-      CASE
-        WHEN status = 'CLOSED' THEN closed_at
-        ELSE created_at
-      END
-    ) AS action_time
-  FROM trips
-  WHERE company_id = $1
-  GROUP BY status
+      SELECT
+        status,
+        COUNT(*) AS count,
+
+        MAX(
+          CASE
+            WHEN status = 'CLOSED'
+            THEN closed_at
+            ELSE created_at
+          END
+        ) AS action_time
+
+      FROM trips
+
+      WHERE company_id = $1
+
+      GROUP BY status
+    `, [companyId]),
+
+    // ===================== TOP PENDING CUSTOMERS =====================
+    pool.query(`
+      SELECT
+        c.id,
+        c.name,
+
+        COALESCE(
+          SUM(
+            s.total_amount -
+            (
+              COALESCE(s.cash_amount,0)
+              + COALESCE(s.upi_amount,0)
+            )
+          ),
+          0
+        ) AS pending_amount
+
+      FROM sales s
+
+      JOIN customers c
+        ON c.id = s.customer_id
+
+      JOIN trips t
+        ON t.id = s.trip_id
+
+      WHERE t.company_id = $1
+
+      GROUP BY
+        c.id,
+        c.name
+
+      HAVING
+        SUM(
+          s.total_amount -
+          (
+            COALESCE(s.cash_amount,0)
+            + COALESCE(s.upi_amount,0)
+          )
+        ) > 0
+
+      ORDER BY pending_amount DESC
+
+      LIMIT 5
+    `, [companyId]),
+
+    // ===================== TOP DRIVERS =====================
+    pool.query(`
+      SELECT
+        u.id,
+        u.name,
+
+        COUNT(DISTINCT t.id) AS total_trips,
+
+        COALESCE(
+          SUM(s.total_amount),
+          0
+        ) AS total_sales
+
+      FROM users u
+
+      LEFT JOIN trips t
+        ON t.driver_id = u.id
+
+      LEFT JOIN sales s
+        ON s.trip_id = t.id
+
+      WHERE
+        u.company_id = $1
+        AND u.role = 'DRIVER'
+
+      GROUP BY
+        u.id,
+        u.name
+
+      ORDER BY total_sales DESC
+
+      LIMIT 5
     `, [companyId])
+
   ]);
 
   return {
-    summary: countsResult.rows[0],
+    summary: {
+      ...countsResult.rows[0],
+      ...dashboardStatsResult.rows[0]
+    },
+
     weeklySales: weeklySalesResult.rows,
+
     paymentSplit: paymentSplitResult.rows,
-    tripStatus: tripStatusResult.rows
+
+    tripStatus: tripStatusResult.rows,
+
+    topPendingCustomers: topPendingCustomersResult.rows,
+
+    topDrivers: topDriversResult.rows
   };
 };
 
@@ -1233,77 +1625,6 @@ exports.getSalesReport = async (companyId, filters) => {
     rows: res.rows,
   };
 };
-
-
-  // exports.getTripReport = async (companyId, filters) => {
-  //   const {
-  //     startDate = null,
-  //     endDate = null,
-  //     farmerId = null,
-  //     driverId = null,
-  //   } = filters || {};
-
-  //   const result = await pool.query(
-  //     `
-  //     SELECT
-  //       t.id AS trip_id,
-  //       t.trip_date,
-  //       t.total_birds,
-
-  //       fr.name AS farmer_name,
-  //       u.name AS driver_name,
-
-  //       COALESCE(SUM(s.total_amount),0) AS total_sales,
-  //       COALESCE(SUM(s.cash_amount),0) AS cash_received,
-  //       COALESCE(SUM(s.upi_amount),0) AS upi_received,
-
-  //       COALESCE(
-  //         SUM(s.total_amount) -
-  //         SUM(COALESCE(s.cash_amount,0) + COALESCE(s.upi_amount,0)),
-  //         0
-  //       ) AS pending_amount
-
-  //     FROM trips t
-
-  //     LEFT JOIN farms fa ON fa.id = t.farm_id
-  //     LEFT JOIN farmers fr ON fr.id = fa.farmer_id
-  //     LEFT JOIN users u ON u.id = t.driver_id
-  //     LEFT JOIN sales s ON s.trip_id = t.id
-
-  //     WHERE t.company_id = $1
-
-  //       AND ($2::date IS NULL OR t.trip_date >= $2)
-  //       AND ($3::date IS NULL OR t.trip_date <= $3)
-
-  //       AND ($4::int IS NULL OR fr.id = $4)
-  //       AND ($5::int IS NULL OR t.driver_id = $5)
-
-  //     GROUP BY
-  //       t.id,
-  //       t.trip_date,
-  //       t.total_birds,
-  //       fr.name,
-  //       u.name
-
-  //     ORDER BY t.trip_date DESC
-  //     `,
-  //     [
-  //       companyId,
-  //       startDate,
-  //       endDate,
-  //       farmerId,
-  //       driverId,
-  //     ]
-  //   );
-
-  //   return result.rows;
-  // };
-
-
-// =======================================================
-// 2️⃣ SINGLE TRIP SALES DETAILS (EXPAND VIEW)
-// =======================================================
-
 exports.getTripReport = async (companyId, filters) => {
   const {
     startDate = null,
