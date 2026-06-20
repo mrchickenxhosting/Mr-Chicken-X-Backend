@@ -365,6 +365,8 @@ exports.createTrip = async (req, res) => {
     const trip = await traderService.createTrip(
       req.user.companyId,
       {
+        source_type: req.body.source_type,
+        source_driver_id: req.body.source_driver_id,
         farm_id: req.body.farm_id,        // ✅ FIXED
         driver_id: req.body.driver_id,
         lifter_id: req.body.lifter_id,

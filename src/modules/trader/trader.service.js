@@ -22,7 +22,7 @@ exports.createUser = async (companyId, { name, mobile, password }, role) => {
   return { message: `${role} created`, user: res.rows[0] };
 };
 
-  exports.getUsers = async (companyId, role) => {
+exports.getUsers = async (companyId, role) => {
   const res = await pool.query(`
     SELECT id,name,mobile,status,created_at
     FROM users
@@ -810,6 +810,8 @@ exports.getAllCustomersOutstanding = async (companyId) => {
  */
 exports.createTrip = async (companyId, data) => {
   let {
+    source_type = 'farmer',
+    source_driver_id,
     farm_id,
     driver_id,
     lifter_id,
@@ -825,13 +827,16 @@ exports.createTrip = async (companyId, data) => {
   driver_id = Number(driver_id);
 
   // ✅ Safer validation
-  if (
-    !farm_id ||
-    !driver_id ||
-    !trip_date ||
-    !trip_time
-  ) {
-    throw new Error('Farm, Driver, Date and Time are required');
+  if (source_type === 'farmer' && !farm_id) {
+    throw new Error('Farm is required');
+  }
+
+  if (source_type === 'driver' && !source_driver_id) {
+    throw new Error('Source driver is required');
+  }
+
+  if (!driver_id) {
+    throw new Error('Delivery partner is required');
   }
 
   if (contact_phone && contact_phone.length !== 10) {
@@ -840,23 +845,29 @@ exports.createTrip = async (companyId, data) => {
 
   const result = await pool.query(
     `
-    INSERT INTO trips (
-      company_id,
-      farm_id,
-      driver_id,
-       lifter_id,   
-      total_birds,
-      trip_time,
-      trip_date,
-      contact_name,
-      contact_phone
-    )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-    RETURNING *
+INSERT INTO trips (
+  company_id,
+  source_type,
+  source_driver_id,
+  farm_id,
+  driver_id,
+  lifter_id,
+  total_birds,
+  trip_time,
+  trip_date,
+  contact_name,
+  contact_phone
+)
+VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+)
+RETURNING *
     `,
     [
       companyId,
-      farm_id,
+      source_type,
+      source_driver_id || null,
+      farm_id || null,
       driver_id,
       lifter_id,     // ✅ ADD
       total_birds || 0,
@@ -875,6 +886,10 @@ exports.getTrips = async (companyId) => {
     SELECT
       t.id,
       t.company_id,
+      t.source_type,
+t.source_driver_id,
+sourceDriver.name AS source_driver_name,
+sourceDriver.mobile AS source_driver_mobile,
 
       -- Farm Info
       t.farm_id,
@@ -927,6 +942,8 @@ exports.getTrips = async (companyId) => {
     -- Join Lifter
     LEFT JOIN users lifter ON lifter.id = t.lifter_id
 
+    LEFT JOIN users sourceDriver ON sourceDriver.id = t.source_driver_id
+
     WHERE t.company_id = $1
 
     ORDER BY t.trip_date DESC, t.trip_time DESC
@@ -937,6 +954,8 @@ exports.getTrips = async (companyId) => {
 
 exports.updateTrip = async (companyId, tripId, data) => {
   const {
+    source_type,
+    source_driver_id,
     farm_id,
     driver_id,
     lifter_id,   // ✅ ADD
@@ -953,22 +972,26 @@ exports.updateTrip = async (companyId, tripId, data) => {
 
   const res = await pool.query(
     `
-    UPDATE trips
-    SET
-      farm_id = COALESCE($1, farm_id),
-      driver_id = COALESCE($2, driver_id),
-      lifter_id = COALESCE($4, lifter_id),   
-      total_birds = COALESCE($4, total_birds),
-      trip_date = COALESCE($5, trip_date),
-      trip_time = COALESCE($6, trip_time),
-      contact_name = COALESCE($7, contact_name),
-      contact_phone = COALESCE($8, contact_phone)
-    WHERE id = $9
-      AND company_id = $10
-      AND status != 'CLOSED'
-    RETURNING *
+   UPDATE trips
+SET
+  source_type = COALESCE($1, source_type),
+  source_driver_id = COALESCE($2, source_driver_id),
+  farm_id = COALESCE($3, farm_id),
+  driver_id = COALESCE($4, driver_id),
+  lifter_id = COALESCE($5, lifter_id),
+  total_birds = COALESCE($6, total_birds),
+  trip_date = COALESCE($7, trip_date),
+  trip_time = COALESCE($8, trip_time),
+  contact_name = COALESCE($9, contact_name),
+  contact_phone = COALESCE($10, contact_phone)
+WHERE id = $11
+  AND company_id = $12
+  AND status != 'CLOSED'
+RETURNING *
     `,
     [
+      source_type,
+  source_driver_id, 
       farm_id,
       driver_id,
       lifter_id,
@@ -1016,29 +1039,66 @@ exports.deleteTrip = async (companyId, tripId) => {
 /* ========= SALES (MANAGER VIEW) ========= */
 
 exports.getTripSales = async (companyId, tripId) => {
-  const res = await pool.query(`
+  console.log('================================');
+  console.log('getTripSales called');
+  console.log('tripId:', tripId);
+  console.log('companyId:', companyId);
+  console.log('================================');
+
+  const res = await pool.query(
+    `
     SELECT
       s.id,
       s.trip_id,
+
+      s.sale_target_type,
+
       s.customer_id,
       c.name AS customer_name,
+
+      s.target_driver_id,
+      u.name AS driver_name,
+
+      CASE
+        WHEN s.sale_target_type = 'DRIVER'
+          THEN u.name
+        ELSE c.name
+      END AS buyer_name,
+
       s.cage_number,
       s.sell_type,
       s.bird_count,
       s.weight,
       s.rate,
       s.total_amount,
+
       s.payment_mode,
       COALESCE(s.cash_amount, 0) AS cash_amount,
       COALESCE(s.upi_amount, 0) AS upi_amount,
+
       s.created_at
+
     FROM sales s
-    JOIN customers c ON c.id = s.customer_id
-    JOIN trips t ON t.id = s.trip_id
+
+    LEFT JOIN customers c
+      ON c.id = s.customer_id
+
+    LEFT JOIN users u
+      ON u.id = s.target_driver_id
+
+    JOIN trips t
+      ON t.id = s.trip_id
+
     WHERE s.trip_id = $1
       AND t.company_id = $2
+
     ORDER BY s.cage_number, s.created_at ASC
-  `, [tripId, companyId]);
+    `,
+    [tripId, companyId]
+  );
+
+  console.log('Sales Found:', res.rows.length);
+  console.log(JSON.stringify(res.rows, null, 2));
 
   return res.rows;
 };

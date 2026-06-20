@@ -59,26 +59,57 @@ exports.getTrips = async (companyId) => {
    (Manager verification view)
 ====================== */
 exports.getTripSales = async (companyId, tripId) => {
-  const res = await pool.query(`
+  console.log({
+  tripId,
+  companyId,
+});
+  const res = await pool.query(
+    `
     SELECT
       s.id,
+
+      s.sale_target_type,
+
+      s.customer_id,
       c.name AS customer_name,
-      s.quantity,
-      s.amount,
-      s.paid_amount,
+
+      s.target_driver_id,
+      u.name AS driver_name,
+
+      s.cage_number,
+      s.sell_type,
+      s.bird_count,
+      s.weight,
+      s.rate,
+      s.total_amount,
+
       s.payment_mode,
+      s.cash_amount,
+      s.upi_amount,
+
       s.created_at
+
     FROM sales s
-    JOIN customers c ON c.id = s.customer_id
-    JOIN orders o ON o.id = s.order_id
-    WHERE s.order_id = $1
-      AND o.company_id = $2
+
+LEFT JOIN customers c
+  ON c.id = s.customer_id
+
+LEFT JOIN users u
+  ON u.id = s.target_driver_id
+
+    JOIN trips t
+      ON t.id = s.trip_id
+
+    WHERE s.trip_id = $1
+      AND t.company_id = $2
+
     ORDER BY s.created_at ASC
-  `, [tripId, companyId]);
+    `,
+    [tripId, companyId]
+  );
 
   return res.rows;
 };
-
 /* ======================
    VERIFY TRIP
    (Manager ACTION – mandatory)
