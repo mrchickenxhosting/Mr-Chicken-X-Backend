@@ -572,16 +572,10 @@ const normalizeNumber = (value, defaultVal = 0) => {
   return Number.isNaN(num) ? defaultVal : num;
 };
 
-const generateCustomerCode = async () => {
-  const res = await pool.query(
-    `SELECT nextval('customer_code_seq') AS seq`
-  );
-  return `CUST-${String(res.rows[0].seq).padStart(5, '0')}`;
-};
-
 
 exports.createCustomer = async (companyId, data) => {
   const {
+    custom_customer_code,
     name,
     shop_name,
     mobile,
@@ -605,14 +599,11 @@ exports.createCustomer = async (companyId, data) => {
   const outstanding =
     has_outstanding ? normalizeNumber(opening_balance) : 0;
 
-  // 🔥 generate unique customer code
-  const customerCode = await generateCustomerCode();
-
   const res = await pool.query(
     `
     INSERT INTO customers (
       company_id,
-      customer_code,
+      custom_customer_code,
       name,
       shop_name,
       mobile,
@@ -634,7 +625,7 @@ exports.createCustomer = async (companyId, data) => {
     `,
     [
       companyId,
-      customerCode,
+      custom_customer_code  || null,
       name,
       shop_name || null,
       mobile,
@@ -668,6 +659,7 @@ exports.getCustomers = async (companyId) => {
 
 exports.updateCustomer = async (companyId, customerId, data) => {
   const {
+    custom_customer_code,
     name,
     shop_name,
     mobile,
@@ -700,44 +692,47 @@ exports.updateCustomer = async (companyId, customerId, data) => {
   const res = await pool.query(
     `
     UPDATE customers
-    SET
-      name = COALESCE($1, name),
-      shop_name = COALESCE($2, shop_name),
-      mobile = COALESCE($3, mobile),
-      alternate_mobile = COALESCE($4, alternate_mobile),
-      city = COALESCE($5, city),
-      address = COALESCE($6, address),
-      customer_type = COALESCE($7, customer_type),
-      credit_limit = COALESCE($8, credit_limit),
-      credit_days = COALESCE($9, credit_days),
-      block_on_limit = COALESCE($10, block_on_limit),
-      payment_mode = COALESCE($11, payment_mode),
-      upi_number = COALESCE($12, upi_number),
-      outstanding = CASE
-        WHEN $13 = true THEN $14
-        ELSE outstanding
-      END
-    WHERE id=$15 AND company_id=$16
-    RETURNING *
+SET
+  custom_customer_code = COALESCE($1, custom_customer_code),
+  name = COALESCE($2, name),
+  shop_name = COALESCE($3, shop_name),
+  mobile = COALESCE($4, mobile),
+  alternate_mobile = COALESCE($5, alternate_mobile),
+  city = COALESCE($6, city),
+  address = COALESCE($7, address),
+  customer_type = COALESCE($8, customer_type),
+  credit_limit = COALESCE($9, credit_limit),
+  credit_days = COALESCE($10, credit_days),
+  block_on_limit = COALESCE($11, block_on_limit),
+  payment_mode = COALESCE($12, payment_mode),
+  upi_number = COALESCE($13, upi_number),
+  outstanding = CASE
+    WHEN $14 = true THEN $15
+    ELSE outstanding
+  END
+WHERE id = $16
+  AND company_id = $17
+RETURNING *;
     `,
     [
-      name,
-      shop_name,
-      mobile,
-      alternate_mobile,
-      city,
-      address,
-      customer_type,
-      credit_limit !== undefined ? Number(credit_limit) : null,
-      credit_days !== undefined ? Number(credit_days) : null,
-      block_on_limit,
-      payment_mode,
-      upi_number,
-      updateOutstanding,
-      outstandingValue,
-      customerId,
-      companyId,
-    ]
+  custom_customer_code, // $1
+  name,                 // $2
+  shop_name,            // $3
+  mobile,               // $4
+  alternate_mobile,     // $5
+  city,                 // $6
+  address,              // $7
+  customer_type,        // $8
+  credit_limit !== undefined ? Number(credit_limit) : null, // $9
+  credit_days !== undefined ? Number(credit_days) : null,   // $10
+  block_on_limit,       // $11
+  payment_mode,         // $12
+  upi_number,           // $13
+  updateOutstanding,    // $14
+  outstandingValue,     // $15
+  customerId,           // $16
+  companyId,            // $17
+]
   );
 
   if (!res.rows.length) {
@@ -789,6 +784,7 @@ exports.getAllCustomersOutstanding = async (companyId) => {
   const result = await pool.query(`
     SELECT
       id AS customer_id,
+      custom_customer_code,
       name,
       mobile,
       outstanding,
@@ -816,6 +812,7 @@ exports.createTrip = async (companyId, data) => {
     driver_id,
     lifter_id,
     total_birds,
+    approx_rate, // <-- Add
     trip_time,
     trip_date,
     contact_name,
@@ -853,13 +850,14 @@ INSERT INTO trips (
   driver_id,
   lifter_id,
   total_birds,
+  approx_rate,
   trip_time,
   trip_date,
   contact_name,
   contact_phone
 )
 VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
 )
 RETURNING *
     `,
@@ -871,6 +869,7 @@ RETURNING *
       driver_id,
       lifter_id,     // ✅ ADD
       total_birds || 0,
+      approx_rate ? Number(approx_rate) : null, // <-- Add this
       trip_time,
       trip_date,
       contact_name || null,
@@ -882,47 +881,51 @@ RETURNING *
 };
 
 exports.getTrips = async (companyId) => {
-  const res = await pool.query(`
+  const res = await pool.query(
+    `
     SELECT
       t.id,
       t.company_id,
-      t.source_type,
-t.source_driver_id,
-sourceDriver.name AS source_driver_name,
-sourceDriver.mobile AS source_driver_mobile,
 
-      -- Farm Info
+      -- Source
+      t.source_type,
+      t.source_driver_id,
+      sourceDriver.name AS source_driver_name,
+      sourceDriver.mobile AS source_driver_mobile,
+
+      -- Farm
       t.farm_id,
       fa.location AS farm_location,
       fa.latitude AS farm_latitude,
       fa.longitude AS farm_longitude,
 
-      -- Farmer Info (via farm)
+      -- Farmer
       f.id AS farmer_id,
       f.name AS farmer_name,
       f.mobile AS farmer_mobile,
 
-      -- Driver Info
+      -- Driver
       t.driver_id,
       u.name AS driver_name,
       u.mobile AS driver_mobile,
 
-      -- Lifter Info
+      -- Lifter
       t.lifter_id,
       lifter.name AS lifter_name,
       lifter.mobile AS lifter_mobile,
 
-      -- Trip Details
+      -- Trip
       t.total_birds,
+      t.total_weight,
+      t.approx_rate,
       t.trip_date,
       t.trip_time,
-      t.total_weight,
 
-      -- Contact Person
+      -- Contact
       t.contact_name,
       t.contact_phone,
 
-      -- Status Info
+      -- Status
       t.status,
       t.is_verified,
       t.created_at,
@@ -930,28 +933,30 @@ sourceDriver.mobile AS source_driver_mobile,
 
     FROM trips t
 
-    -- Join farm directly
-    LEFT JOIN farms fa ON fa.id = t.farm_id
+    LEFT JOIN farms fa
+      ON fa.id = t.farm_id
 
-    -- Join farmer via farm
-    LEFT JOIN farmers f ON f.id = fa.farmer_id
+    LEFT JOIN farmers f
+      ON f.id = fa.farmer_id
 
-    -- Join driver
-    LEFT JOIN users u ON u.id = t.driver_id
+    LEFT JOIN users u
+      ON u.id = t.driver_id
 
-    -- Join Lifter
-    LEFT JOIN users lifter ON lifter.id = t.lifter_id
+    LEFT JOIN users lifter
+      ON lifter.id = t.lifter_id
 
-    LEFT JOIN users sourceDriver ON sourceDriver.id = t.source_driver_id
+    LEFT JOIN users sourceDriver
+      ON sourceDriver.id = t.source_driver_id
 
     WHERE t.company_id = $1
 
     ORDER BY t.trip_date DESC, t.trip_time DESC
-  `, [companyId]);
+    `,
+    [companyId]
+  );
 
   return res.rows;
 };
-
 exports.updateTrip = async (companyId, tripId, data) => {
   const {
     source_type,
@@ -961,6 +966,7 @@ exports.updateTrip = async (companyId, tripId, data) => {
     lifter_id,   // ✅ ADD
     total_birds,
     trip_date,
+    approx_rate,
     trip_time,
     contact_name,
     contact_phone,
@@ -980,23 +986,25 @@ SET
   driver_id = COALESCE($4, driver_id),
   lifter_id = COALESCE($5, lifter_id),
   total_birds = COALESCE($6, total_birds),
-  trip_date = COALESCE($7, trip_date),
-  trip_time = COALESCE($8, trip_time),
-  contact_name = COALESCE($9, contact_name),
-  contact_phone = COALESCE($10, contact_phone)
-WHERE id = $11
-  AND company_id = $12
+  approx_rate = COALESCE($7, approx_rate),
+  trip_date = COALESCE($8, trip_date),
+  trip_time = COALESCE($9, trip_time),
+  contact_name = COALESCE($10, contact_name),
+  contact_phone = COALESCE($11, contact_phone)
+WHERE id = $12
+  AND company_id = $13
   AND status != 'CLOSED'
 RETURNING *
     `,
     [
       source_type,
-  source_driver_id, 
+      source_driver_id, 
       farm_id,
       driver_id,
       lifter_id,
       total_birds,
       trip_date,
+      approx_rate ? Number(approx_rate) : null,
       trip_time,
       contact_name || null,
       contact_phone || null,
@@ -1793,12 +1801,12 @@ exports.getTripReport = async (companyId, filters) => {
   return result.rows;
 };
 exports.getTripSalesDetails = async (tripId) => {
-
   const result = await pool.query(
     `
     SELECT
       s.id,
-      s.created_at::date AS sale_date,
+
+      t.trip_date::date AS sale_date,
 
       c.name AS customer_name,
 
@@ -1820,6 +1828,7 @@ exports.getTripSalesDetails = async (tripId) => {
 
     FROM sales s
     JOIN customers c ON c.id = s.customer_id
+    JOIN trips t ON t.id = s.trip_id
 
     WHERE s.trip_id = $1
 

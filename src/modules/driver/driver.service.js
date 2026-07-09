@@ -37,6 +37,7 @@ exports.getAssignedTrips = async (user) => {
       t.total_birds,
       t.trip_time,
       t.trip_date,
+      t.approx_rate,
       t.status,
       t.created_at,
 
@@ -862,12 +863,9 @@ VALUES (
     // ✅ UPDATE CUSTOMER OUTSTANDING
     // =========================================================
 
-    const paymentReceived =
-      Number(cash_amount || 0) +
-      Number(upi_amount || 0);
-
-    const pendingAmount =
-      Number(total_amount) - paymentReceived;
+  const paymentReceived =
+  Number(cash_amount || 0) +
+  Number(upi_amount || 0);
 
 if (sale_target_type === 'CUSTOMER') {
   await client.query(
@@ -880,13 +878,12 @@ if (sale_target_type === 'CUSTOMER') {
     WHERE id = $3
     `,
     [
-      pendingAmount,
+      Number(total_amount),
       paymentReceived,
-      customer_id
+      customer_id,
     ]
   );
 }
-
     await client.query('COMMIT');
 
     return {

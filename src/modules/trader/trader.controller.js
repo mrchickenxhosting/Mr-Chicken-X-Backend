@@ -371,6 +371,7 @@ exports.createTrip = async (req, res) => {
         driver_id: req.body.driver_id,
         lifter_id: req.body.lifter_id,
         total_birds: req.body.total_birds,
+        approx_rate: req.body.approx_rate, // <-- Add
         trip_time: req.body.trip_time,
         trip_date: req.body.trip_date,
         contact_name: req.body.contact_name,
