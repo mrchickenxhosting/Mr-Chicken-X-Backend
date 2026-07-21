@@ -625,7 +625,7 @@ exports.createCustomer = async (companyId, data) => {
     `,
     [
       companyId,
-      custom_customer_code  || null,
+      custom_customer_code || null,
       name,
       shop_name || null,
       mobile,
@@ -715,24 +715,24 @@ WHERE id = $16
 RETURNING *;
     `,
     [
-  custom_customer_code, // $1
-  name,                 // $2
-  shop_name,            // $3
-  mobile,               // $4
-  alternate_mobile,     // $5
-  city,                 // $6
-  address,              // $7
-  customer_type,        // $8
-  credit_limit !== undefined ? Number(credit_limit) : null, // $9
-  credit_days !== undefined ? Number(credit_days) : null,   // $10
-  block_on_limit,       // $11
-  payment_mode,         // $12
-  upi_number,           // $13
-  updateOutstanding,    // $14
-  outstandingValue,     // $15
-  customerId,           // $16
-  companyId,            // $17
-]
+      custom_customer_code, // $1
+      name,                 // $2
+      shop_name,            // $3
+      mobile,               // $4
+      alternate_mobile,     // $5
+      city,                 // $6
+      address,              // $7
+      customer_type,        // $8
+      credit_limit !== undefined ? Number(credit_limit) : null, // $9
+      credit_days !== undefined ? Number(credit_days) : null,   // $10
+      block_on_limit,       // $11
+      payment_mode,         // $12
+      upi_number,           // $13
+      updateOutstanding,    // $14
+      outstandingValue,     // $15
+      customerId,           // $16
+      companyId,            // $17
+    ]
   );
 
   if (!res.rows.length) {
@@ -998,7 +998,7 @@ RETURNING *
     `,
     [
       source_type,
-      source_driver_id, 
+      source_driver_id,
       farm_id,
       driver_id,
       lifter_id,
@@ -1805,18 +1805,13 @@ exports.getTripSalesDetails = async (tripId) => {
     `
     SELECT
       s.id,
-
       t.trip_date::date AS sale_date,
-
       c.name AS customer_name,
-
       s.cage_number,
       s.sell_type,
-
       s.bird_count,
       s.weight,
       s.rate,
-
       s.total_amount,
       s.cash_amount,
       s.upi_amount,
@@ -1829,9 +1824,7 @@ exports.getTripSalesDetails = async (tripId) => {
     FROM sales s
     JOIN customers c ON c.id = s.customer_id
     JOIN trips t ON t.id = s.trip_id
-
     WHERE s.trip_id = $1
-
     ORDER BY s.created_at DESC
     `,
     [tripId]
