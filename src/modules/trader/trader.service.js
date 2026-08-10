@@ -597,31 +597,35 @@ exports.createCustomer = async (companyId, data) => {
   }
 
   const outstanding =
-    has_outstanding ? normalizeNumber(opening_balance) : 0;
+    has_outstanding === true
+      ? Number(opening_balance) || 0
+      : 0;
 
   const res = await pool.query(
     `
-    INSERT INTO customers (
-      company_id,
-      custom_customer_code,
-      name,
-      shop_name,
-      mobile,
-      alternate_mobile,
-      city,
-      address,
-      customer_type,
-      credit_limit,
-      credit_days,
-      block_on_limit,
-      payment_mode,
-      upi_number,
-      outstanding
-    )
-    VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
-    )
-    RETURNING *
+      INSERT INTO customers (
+        company_id,
+        custom_customer_code,
+        name,
+        shop_name,
+        mobile,
+        alternate_mobile,
+        city,
+        address,
+        customer_type,
+        credit_limit,
+        credit_days,
+        block_on_limit,
+        payment_mode,
+        upi_number,
+        outstanding
+      )
+      VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15
+      )
+      RETURNING *
     `,
     [
       companyId,
@@ -633,8 +637,15 @@ exports.createCustomer = async (companyId, data) => {
       city || null,
       address || null,
       customer_type || 'GREEN',
-      normalizeNumber(credit_limit),
-      normalizeNumber(credit_days),
+
+      credit_limit !== undefined && credit_limit !== null
+        ? Number(credit_limit)
+        : 0,
+
+      credit_days !== undefined && credit_days !== null
+        ? Number(credit_days)
+        : 0,
+
       block_on_limit ?? true,
       payment_mode || 'CASH',
       upi_number || null,
