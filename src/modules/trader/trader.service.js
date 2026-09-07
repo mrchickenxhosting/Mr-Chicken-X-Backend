@@ -823,64 +823,90 @@ exports.createTrip = async (companyId, data) => {
     driver_id,
     lifter_id,
     total_birds,
-    approx_rate, // <-- Add
+    approx_rate,
     trip_time,
     trip_date,
     contact_name,
     contact_phone,
   } = data;
 
-  // 🔥 Convert IDs to numbers
-  farm_id = Number(farm_id);
-  driver_id = Number(driver_id);
+  // Convert IDs safely
+  farm_id =
+    farm_id !== undefined && farm_id !== null && farm_id !== ''
+      ? Number(farm_id)
+      : null;
 
-  // ✅ Safer validation
-  if (source_type === 'farmer' && !farm_id) {
-    throw new Error('Farm is required');
+  driver_id =
+    driver_id !== undefined && driver_id !== null && driver_id !== ''
+      ? Number(driver_id)
+      : null;
+
+  source_driver_id =
+    source_driver_id !== undefined &&
+    source_driver_id !== null &&
+    source_driver_id !== ''
+      ? Number(source_driver_id)
+      : null;
+
+  lifter_id =
+    lifter_id !== undefined && lifter_id !== null && lifter_id !== ''
+      ? Number(lifter_id)
+      : null;
+
+  // Farmer source MUST have a valid farm
+  if (source_type === 'farmer') {
+    if (!Number.isInteger(farm_id) || farm_id <= 0) {
+      throw new Error('Valid farm is required');
+    }
   }
 
-  if (source_type === 'driver' && !source_driver_id) {
-    throw new Error('Source driver is required');
+  // Driver source MUST have a valid source driver
+  if (source_type === 'driver') {
+    if (!Number.isInteger(source_driver_id) || source_driver_id <= 0) {
+      throw new Error('Valid source driver is required');
+    }
   }
 
-  if (!driver_id) {
-    throw new Error('Delivery partner is required');
+  // Delivery partner MUST always be valid
+  if (!Number.isInteger(driver_id) || driver_id <= 0) {
+    throw new Error('Valid delivery partner is required');
   }
 
+  // Validate contact phone
   if (contact_phone && contact_phone.length !== 10) {
     throw new Error('Contact phone must be 10 digits');
   }
 
   const result = await pool.query(
     `
-INSERT INTO trips (
-  company_id,
-  source_type,
-  source_driver_id,
-  farm_id,
-  driver_id,
-  lifter_id,
-  total_birds,
-  approx_rate,
-  trip_time,
-  trip_date,
-  contact_name,
-  contact_phone
-)
-VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
-)
-RETURNING *
+      INSERT INTO trips (
+        company_id,
+        source_type,
+        source_driver_id,
+        farm_id,
+        driver_id,
+        lifter_id,
+        total_birds,
+        approx_rate,
+        trip_time,
+        trip_date,
+        contact_name,
+        contact_phone
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+      )
+      RETURNING *
     `,
     [
       companyId,
       source_type,
-      source_driver_id || null,
-      farm_id || null,
+      source_driver_id,
+      farm_id,
       driver_id,
-      lifter_id,     // ✅ ADD
+      lifter_id,
       total_birds || 0,
-      approx_rate ? Number(approx_rate) : null, // <-- Add this
+      approx_rate ? Number(approx_rate) : null,
       trip_time,
       trip_date,
       contact_name || null,
