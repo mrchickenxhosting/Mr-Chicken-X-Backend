@@ -1000,7 +1000,7 @@ exports.updateTrip = async (companyId, tripId, data) => {
     source_driver_id,
     farm_id,
     driver_id,
-    lifter_id,   // ✅ ADD
+    lifter_id,
     total_birds,
     trip_date,
     approx_rate,
@@ -1015,23 +1015,23 @@ exports.updateTrip = async (companyId, tripId, data) => {
 
   const res = await pool.query(
     `
-   UPDATE trips
-SET
-  source_type = COALESCE($1, source_type),
-  source_driver_id = COALESCE($2, source_driver_id),
-  farm_id = COALESCE($3, farm_id),
-  driver_id = COALESCE($4, driver_id),
-  lifter_id = COALESCE($5, lifter_id),
-  total_birds = COALESCE($6, total_birds),
-  approx_rate = COALESCE($7, approx_rate),
-  trip_date = COALESCE($8, trip_date),
-  trip_time = COALESCE($9, trip_time),
-  contact_name = COALESCE($10, contact_name),
-  contact_phone = COALESCE($11, contact_phone)
-WHERE id = $12
-  AND company_id = $13
-  AND status != 'CLOSED'
-RETURNING *
+    UPDATE trips
+    SET
+      source_type = COALESCE($1, source_type),
+      source_driver_id = COALESCE($2, source_driver_id),
+      farm_id = COALESCE($3, farm_id),
+      driver_id = COALESCE($4, driver_id),
+      lifter_id = COALESCE($5, lifter_id),
+      total_birds = COALESCE($6, total_birds),
+      approx_rate = COALESCE($7, approx_rate),
+      trip_date = COALESCE($8, trip_date),
+      trip_time = COALESCE($9, trip_time),
+      contact_name = COALESCE($10, contact_name),
+      contact_phone = COALESCE($11, contact_phone)
+    WHERE id = $12
+      AND company_id = $13
+      AND status != 'CLOSED'
+    RETURNING *
     `,
     [
       source_type,
@@ -1040,8 +1040,8 @@ RETURNING *
       driver_id,
       lifter_id,
       total_birds,
-      trip_date,
       approx_rate ? Number(approx_rate) : null,
+      trip_date,
       trip_time,
       contact_name || null,
       contact_phone || null,
