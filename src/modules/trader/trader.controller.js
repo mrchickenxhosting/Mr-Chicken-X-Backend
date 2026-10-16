@@ -1,26 +1,38 @@
 const traderService = require('./trader.service');
 
 /* ========= MANAGERS ========= */
+
 exports.createManager = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createUser(req.user.companyId, req.body, 'MANAGER')
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getManagers = async (req, res) => {
   try {
     res.json(await traderService.getUsers(req.user.companyId, 'MANAGER'));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateManagerStatus = async (req, res) => {
   try {
-    res.json(await traderService.updateUserStatus(
-      req.user.companyId, req.params.id, req.body.status, 'MANAGER'
-    ));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    res.json(
+      await traderService.updateUserStatus(
+        req.user.companyId,
+        req.params.id,
+        req.body.status,
+        'MANAGER'
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateManager = async (req, res) => {
@@ -52,28 +64,39 @@ exports.deleteManager = async (req, res) => {
   }
 };
 
-
 /* ========= DRIVERS ========= */
+
 exports.createDriver = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createUser(req.user.companyId, req.body, 'DRIVER')
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getDrivers = async (req, res) => {
   try {
     res.json(await traderService.getUsers(req.user.companyId, 'DRIVER'));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateDriverStatus = async (req, res) => {
   try {
-    res.json(await traderService.updateUserStatus(
-      req.user.companyId, req.params.id, req.body.status, 'DRIVER'
-    ));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    res.json(
+      await traderService.updateUserStatus(
+        req.user.companyId,
+        req.params.id,
+        req.body.status,
+        'DRIVER'
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateDrivers = async (req, res) => {
@@ -106,26 +129,37 @@ exports.deleteDrivers = async (req, res) => {
 };
 
 /* ========= CARS ========= */
+
 exports.createCar = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createCar(req.user.companyId, req.body)
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getCars = async (req, res) => {
   try {
     res.json(await traderService.getCars(req.user.companyId));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateCarStatus = async (req, res) => {
   try {
-    res.json(await traderService.updateCarStatus(
-      req.user.companyId, req.params.id, req.body.status
-    ));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    res.json(
+      await traderService.updateCarStatus(
+        req.user.companyId,
+        req.params.id,
+        req.body.status
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateCars = async (req, res) => {
@@ -145,10 +179,7 @@ exports.updateCars = async (req, res) => {
 exports.deleteCars = async (req, res) => {
   try {
     res.json(
-      await traderService.deleteCar(
-        req.user.companyId,
-        req.params.id
-      )
+      await traderService.deleteCar(req.user.companyId, req.params.id)
     );
   } catch (e) {
     res.status(400).json({ message: e.message });
@@ -156,26 +187,38 @@ exports.deleteCars = async (req, res) => {
 };
 
 /* ========= LIFTERS ========= */
+
 exports.createLifter = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createUser(req.user.companyId, req.body, 'LIFTER')
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getLifters = async (req, res) => {
   try {
     res.json(await traderService.getUsers(req.user.companyId, 'LIFTER'));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateLifterStatus = async (req, res) => {
   try {
-    res.json(await traderService.updateUserStatus(
-      req.user.companyId, req.params.id, req.body.status, 'LIFTER'
-    ));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    res.json(
+      await traderService.updateUserStatus(
+        req.user.companyId,
+        req.params.id,
+        req.body.status,
+        'LIFTER'
+      )
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateLifters = async (req, res) => {
@@ -208,18 +251,23 @@ exports.deleteLifters = async (req, res) => {
 };
 
 /* ========= FARMERS ========= */
+
 exports.createFarmer = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createFarmer(req.user.companyId, req.body)
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getFarmers = async (req, res) => {
   try {
     res.json(await traderService.getFarmers(req.user.companyId));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateFarmer = async (req, res) => {
@@ -267,30 +315,31 @@ exports.updateFarmerStatus = async (req, res) => {
 exports.deleteFarmer = async (req, res) => {
   try {
     res.json(
-      await traderService.deleteFarmer(
-        req.user.companyId,
-        req.params.id
-      )
+      await traderService.deleteFarmer(req.user.companyId, req.params.id)
     );
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
 };
 
-
 /* ========= CUSTOMERS ========= */
+
 exports.createCustomer = async (req, res) => {
   try {
     res.status(201).json(
       await traderService.createCustomer(req.user.companyId, req.body)
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getCustomers = async (req, res) => {
   try {
     res.json(await traderService.getCustomers(req.user.companyId));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.updateCustomer = async (req, res) => {
@@ -324,7 +373,19 @@ exports.updateCustomerStatus = async (req, res) => {
 exports.deleteCustomer = async (req, res) => {
   try {
     res.json(
-      await traderService.deleteCustomer(
+      await traderService.deleteCustomer(req.user.companyId, req.params.id)
+    );
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
+};
+
+/* ========= OUTSTANDING ========= */
+
+exports.getCustomerOutstanding = async (req, res) => {
+  try {
+    res.json(
+      await traderService.getCustomerOutstanding(
         req.user.companyId,
         req.params.id
       )
@@ -334,100 +395,93 @@ exports.deleteCustomer = async (req, res) => {
   }
 };
 
-
-/* ========= OUTSTANDING ========= */
-exports.getCustomerOutstanding = async (req, res) => {
-  try {
-    res.json(
-      await traderService.getCustomerOutstanding(req.user.companyId, req.params.id)
-    );
-  } catch (e) { res.status(400).json({ message: e.message }); }
-};
-
 exports.getAllCustomersOutstanding = async (req, res) => {
   try {
-    const data = await traderService.getAllCustomersOutstanding(req.user.companyId);
+    const data = await traderService.getAllCustomersOutstanding(
+      req.user.companyId
+    );
+
     res.json(data);
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
 };
 
+/* ================= TRIPS (ORDERS) ================= */
 
-/* ========= TRIPS (ORDERS) ========= */
-/**
- * orders table = trips
- * This API assigns driver to farmer
- */
 exports.createTrip = async (req, res) => {
-  console.log(req)
   try {
-    const trip = await traderService.createTrip(
-      req.user.companyId,
-      {
-        source_type: req.body.source_type,
-        source_driver_id: req.body.source_driver_id,
-        farm_id: req.body.farm_id,        // ✅ FIXED
-        driver_id: req.body.driver_id,
-        lifter_id: req.body.lifter_id,
-        total_birds: req.body.total_birds,
-        approx_rate: req.body.approx_rate, // <-- Add
-        trip_time: req.body.trip_time,
-        trip_date: req.body.trip_date,
-        contact_name: req.body.contact_name,
-        contact_phone: req.body.contact_phone,
-      }
-    );
+    const trip = await traderService.createTrip(req.user.companyId, {
+      source_type: req.body.source_type,
+      source_driver_id: req.body.source_driver_id,
+      farm_id: req.body.farm_id,
+      driver_id: req.body.driver_id,
+      lifter_id: req.body.lifter_id,
+      broker_id: req.body.broker_id,
+      total_birds: req.body.total_birds,
+      approx_rate: req.body.approx_rate,
+      trip_time: req.body.trip_time,
+      trip_date: req.body.trip_date,
+      contact_name: req.body.contact_name,
+      contact_phone: req.body.contact_phone,
+    });
 
-    res.json(trip);
-  } catch (e) {
-    res.status(400).json({ message: e.message });
+    return res.status(201).json(trip);
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
   }
 };
 
 exports.getTrips = async (req, res) => {
   try {
-    res.json(await traderService.getTrips(req.user.companyId));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    const trips = await traderService.getTrips(req.user.companyId);
+    return res.json(trips);
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
 };
 
 exports.updateTrip = async (req, res) => {
   try {
-    res.json(
-      await traderService.updateTrip(
-        req.user.companyId,
-        req.params.id,
-        req.body
-      )
+    const trip = await traderService.updateTrip(
+      req.user.companyId,
+      req.params.id,
+      req.body
     );
-  } catch (e) {
-    res.status(400).json({ message: e.message });
+
+    return res.json(trip);
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
   }
 };
 
 exports.deleteTrip = async (req, res) => {
   try {
+    const result = await traderService.deleteTrip(
+      req.user.companyId,
+      req.params.id
+    );
+
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ message: error.message });
+  }
+};
+
+/* ========= SALES (MANAGER VIEW) ========= */
+
+exports.getTripSales = async (req, res) => {
+  try {
     res.json(
-      await traderService.deleteTrip(
-        req.user.companyId,
-        req.params.id
-      )
+      await traderService.getTripSales(req.user.companyId, req.params.tripId)
     );
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
 };
 
-/* ========= SALES (MANAGER VIEW) ========= */
-exports.getTripSales = async (req, res) => {
-  try {
-    res.json(
-      await traderService.getTripSales(req.user.companyId, req.params.tripId)
-    );
-  } catch (e) { res.status(400).json({ message: e.message }); }
-};
-
 /* ========= DAY CLOSE ========= */
+
 exports.closeDay = async (req, res) => {
   try {
     res.json(
@@ -437,7 +491,9 @@ exports.closeDay = async (req, res) => {
         req.body
       )
     );
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    res.status(400).json({ message: e.message });
+  }
 };
 
 exports.getTripExpenses = async (req, res) => {
@@ -454,11 +510,10 @@ exports.getTripExpenses = async (req, res) => {
 };
 
 /* ========= DASHBOARD ========= */
+
 exports.getDashboard = async (req, res) => {
   try {
-    res.json(
-      await traderService.getDashboard(req.user.companyId)
-    );
+    res.json(await traderService.getDashboard(req.user.companyId));
   } catch (e) {
     res.status(400).json({ message: e.message });
   }
@@ -480,23 +535,22 @@ exports.creditCustomer = async (req, res) => {
     );
 
     res.json(result);
-
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
 };
 
 /* ========= REPORTS ========= */
+
 exports.getReport = async (req, res) => {
   try {
-
     const {
       startDate,
       endDate,
       customerId,
       farmerId,
       driverId,
-      groupBy
+      groupBy,
     } = req.body;
 
     const report = await traderService.getSalesReport(
@@ -507,23 +561,21 @@ exports.getReport = async (req, res) => {
         customerId,
         farmerId,
         driverId,
-        groupBy
+        groupBy,
       }
     );
 
     res.json(report);
-
   } catch (err) {
     console.error(err);
     res.status(400).json({
-      message: err.message || 'Failed to load report'
+      message: err.message || 'Failed to load report',
     });
   }
 };
 
 exports.getTripReport = async (req, res) => {
   try {
-
     const companyId = req.user.companyId;
     const filters = req.body;
 
@@ -532,31 +584,27 @@ exports.getTripReport = async (req, res) => {
     res.json({
       success: true,
       count: data.length,
-      rows: data
+      rows: data,
     });
-
   } catch (error) {
     console.error('Trip Report Error:', error);
 
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to load trip report'
+      message: error.message || 'Failed to load trip report',
     });
   }
 };
 
-// ----------------------------------------
-// SINGLE TRIP SALES DETAILS
-// ----------------------------------------
+/* ========= SINGLE TRIP SALES DETAILS ========= */
 
 exports.getTripSalesDetails = async (req, res) => {
   try {
-
     const { tripId } = req.params;
 
     if (!tripId) {
       return res.status(400).json({
-        message: 'Trip ID is required'
+        message: 'Trip ID is required',
       });
     }
 
@@ -565,22 +613,19 @@ exports.getTripSalesDetails = async (req, res) => {
     res.json({
       success: true,
       count: rows.length,
-      rows
+      rows,
     });
-
   } catch (error) {
     console.error('Trip Details Error:', error);
 
     res.status(500).json({
       success: false,
-      message: error.message || 'Failed to load trip sales'
+      message: error.message || 'Failed to load trip sales',
     });
   }
 };
 
-// ----------------------------------------
-// CUSTOMER SALES DETAILS (DETAILED)
-// ----------------------------------------
+/* ========= CUSTOMER SALES DETAILS (DETAILED) ========= */
 
 exports.getCustomerSalesDetails = async (req, res) => {
   try {
@@ -605,14 +650,60 @@ exports.getCustomerSalesDetails = async (req, res) => {
     });
   } catch (error) {
     console.error('Customer Sales Error:', error);
+
     res.status(500).json({
-      success: false,
       message: error.message || 'Failed to load customer sales',
     });
   }
 };
 
+/* ================= BROKERS ================= */
 
+exports.createBroker = async (req, res) => {
+  try {
+    const broker = await traderService.createBroker(
+      req.user.companyId,
+      req.body
+    );
 
+    res.status(201).json(broker);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
 
+exports.getBrokers = async (req, res) => {
+  try {
+    const brokers = await traderService.getBrokers(req.user.companyId);
+    res.json(brokers);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
 
+exports.updateBroker = async (req, res) => {
+  try {
+    const broker = await traderService.updateBroker(
+      req.user.companyId,
+      req.params.id,
+      req.body
+    );
+
+    res.json(broker);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};
+
+exports.deleteBroker = async (req, res) => {
+  try {
+    const result = await traderService.deleteBroker(
+      req.user.companyId,
+      req.params.id
+    );
+
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+};

@@ -110,5 +110,10 @@ router.get(
   traderController.getCustomerSalesDetails
 );
 
+/* ================= BROKERS ================= */
+router.post('/brokers', authMiddleware, traderController.createBroker);
+router.get('/brokers', authMiddleware, traderController.getBrokers);
+router.patch('/brokers/:id', authMiddleware, traderController.updateBroker);
+router.delete('/brokers/:id', authMiddleware, traderController.deleteBroker);
 
 module.exports = router;

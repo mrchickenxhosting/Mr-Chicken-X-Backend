@@ -822,6 +822,7 @@ exports.createTrip = async (companyId, data) => {
     farm_id,
     driver_id,
     lifter_id,
+    broker_id,
     total_birds,
     approx_rate,
     trip_time,
@@ -831,27 +832,20 @@ exports.createTrip = async (companyId, data) => {
   } = data;
 
   // Convert IDs safely
-  farm_id =
-    farm_id !== undefined && farm_id !== null && farm_id !== ''
-      ? Number(farm_id)
-      : null;
+  const toId = (value) => {
+    if (value === undefined || value === null || value === '') {
+      return null;
+    }
 
-  driver_id =
-    driver_id !== undefined && driver_id !== null && driver_id !== ''
-      ? Number(driver_id)
-      : null;
+    const id = Number(value);
+    return Number.isInteger(id) && id > 0 ? id : NaN;
+  };
 
-  source_driver_id =
-    source_driver_id !== undefined &&
-    source_driver_id !== null &&
-    source_driver_id !== ''
-      ? Number(source_driver_id)
-      : null;
-
-  lifter_id =
-    lifter_id !== undefined && lifter_id !== null && lifter_id !== ''
-      ? Number(lifter_id)
-      : null;
+  farm_id = toId(farm_id);
+  driver_id = toId(driver_id);
+  source_driver_id = toId(source_driver_id);
+  lifter_id = toId(lifter_id);
+  broker_id = toId(broker_id);
 
   // Farmer source MUST have a valid farm
   if (source_type === 'farmer') {
@@ -872,8 +866,24 @@ exports.createTrip = async (companyId, data) => {
     throw new Error('Valid delivery partner is required');
   }
 
+  // Validate broker belongs to this company (optional field)
+  if (broker_id !== null) {
+    if (!Number.isInteger(broker_id) || broker_id <= 0) {
+      throw new Error('Invalid broker ID');
+    }
+
+    const brokerResult = await pool.query(
+      `SELECT id FROM brokers WHERE id = $1 AND company_id = $2`,
+      [broker_id, companyId]
+    );
+
+    if (brokerResult.rows.length === 0) {
+      throw new Error('Broker not found for this company');
+    }
+  }
+
   // Validate contact phone
-  if (contact_phone && contact_phone.length !== 10) {
+  if (contact_phone && !/^\d{10}$/.test(String(contact_phone))) {
     throw new Error('Contact phone must be 10 digits');
   }
 
@@ -886,6 +896,7 @@ exports.createTrip = async (companyId, data) => {
         farm_id,
         driver_id,
         lifter_id,
+        broker_id,
         total_birds,
         approx_rate,
         trip_time,
@@ -894,7 +905,7 @@ exports.createTrip = async (companyId, data) => {
         contact_phone
       )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
       )
       RETURNING *
     `,
@@ -905,6 +916,7 @@ exports.createTrip = async (companyId, data) => {
       farm_id,
       driver_id,
       lifter_id,
+      broker_id,
       total_birds || 0,
       approx_rate ? Number(approx_rate) : null,
       trip_time,
@@ -920,74 +932,87 @@ exports.createTrip = async (companyId, data) => {
 exports.getTrips = async (companyId) => {
   const res = await pool.query(
     `
-    SELECT
-      t.id,
-      t.company_id,
+      SELECT
+        t.id,
+        t.company_id,
 
-      -- Source
-      t.source_type,
-      t.source_driver_id,
-      sourceDriver.name AS source_driver_name,
-      sourceDriver.mobile AS source_driver_mobile,
+        -- Source
+        t.source_type,
+        t.source_driver_id,
+        sourceDriver.name AS source_driver_name,
+        sourceDriver.mobile AS source_driver_mobile,
 
-      -- Farm
-      t.farm_id,
-      fa.location AS farm_location,
-      fa.latitude AS farm_latitude,
-      fa.longitude AS farm_longitude,
+        -- Farm
+        t.farm_id,
+        fa.location AS farm_location,
+        fa.latitude AS farm_latitude,
+        fa.longitude AS farm_longitude,
 
-      -- Farmer
-      f.id AS farmer_id,
-      f.name AS farmer_name,
-      f.mobile AS farmer_mobile,
+        -- Farmer
+        f.id AS farmer_id,
+        f.name AS farmer_name,
+        f.mobile AS farmer_mobile,
 
-      -- Driver
-      t.driver_id,
-      u.name AS driver_name,
-      u.mobile AS driver_mobile,
+        -- Driver
+        t.driver_id,
+        u.name AS driver_name,
+        u.mobile AS driver_mobile,
 
-      -- Lifter
-      t.lifter_id,
-      lifter.name AS lifter_name,
-      lifter.mobile AS lifter_mobile,
+        -- Lifter
+        t.lifter_id,
+        lifter.name AS lifter_name,
+        lifter.mobile AS lifter_mobile,
 
-      -- Trip
-      t.total_birds,
-      t.total_weight,
-      t.approx_rate,
-      t.trip_date,
-      t.trip_time,
+        -- Broker
+        t.broker_id,
+        b.name AS broker_name,
+        b.number AS broker_number,
 
-      -- Contact
-      t.contact_name,
-      t.contact_phone,
+        -- Trip
+        t.total_birds,
+        t.total_weight,
+        t.approx_rate,
+        t.trip_date,
+        t.trip_time,
 
-      -- Status
-      t.status,
-      t.is_verified,
-      t.created_at,
-      t.closed_at
+        -- Contact
+        t.contact_name,
+        t.contact_phone,
 
-    FROM trips t
+        -- Status
+        t.status,
+        t.is_verified,
+        t.created_at,
+        t.closed_at
 
-    LEFT JOIN farms fa
-      ON fa.id = t.farm_id
+      FROM trips t
 
-    LEFT JOIN farmers f
-      ON f.id = fa.farmer_id
+      LEFT JOIN farms fa
+        ON fa.id = t.farm_id
 
-    LEFT JOIN users u
-      ON u.id = t.driver_id
+      LEFT JOIN farmers f
+        ON f.id = fa.farmer_id
+       AND f.company_id = t.company_id
 
-    LEFT JOIN users lifter
-      ON lifter.id = t.lifter_id
+      LEFT JOIN users u
+        ON u.id = t.driver_id
+       AND u.company_id = t.company_id
 
-    LEFT JOIN users sourceDriver
-      ON sourceDriver.id = t.source_driver_id
+      LEFT JOIN users lifter
+        ON lifter.id = t.lifter_id
+       AND lifter.company_id = t.company_id
 
-    WHERE t.company_id = $1
+      LEFT JOIN users sourceDriver
+        ON sourceDriver.id = t.source_driver_id
+       AND sourceDriver.company_id = t.company_id
 
-    ORDER BY t.trip_date DESC, t.trip_time DESC
+      LEFT JOIN brokers b
+        ON b.id = t.broker_id
+       AND b.company_id = t.company_id
+
+      WHERE t.company_id = $1
+
+      ORDER BY t.trip_date DESC, t.trip_time DESC
     `,
     [companyId]
   );
@@ -1001,6 +1026,7 @@ exports.updateTrip = async (companyId, tripId, data) => {
     farm_id,
     driver_id,
     lifter_id,
+    broker_id,
     total_birds,
     trip_date,
     approx_rate,
@@ -1009,44 +1035,89 @@ exports.updateTrip = async (companyId, tripId, data) => {
     contact_phone,
   } = data;
 
-  if (contact_phone && contact_phone.length !== 10) {
+  // Validate contact phone
+  if (
+    contact_phone !== undefined &&
+    contact_phone !== null &&
+    contact_phone !== '' &&
+    !/^\d{10}$/.test(String(contact_phone))
+  ) {
     throw new Error('Contact phone must be 10 digits');
+  }
+
+  // Normalize broker ID while preserving null to remove a broker
+  let normalizedBrokerId = null;
+
+  if (broker_id !== undefined && broker_id !== null && broker_id !== '') {
+    normalizedBrokerId = Number(broker_id);
+
+    if (!Number.isInteger(normalizedBrokerId) || normalizedBrokerId <= 0) {
+      throw new Error('Invalid broker ID');
+    }
+
+    // Ensure the broker belongs to this company
+    const brokerResult = await pool.query(
+      `
+        SELECT id
+        FROM brokers
+        WHERE id = $1
+          AND company_id = $2
+      `,
+      [normalizedBrokerId, companyId]
+    );
+
+    if (brokerResult.rows.length === 0) {
+      throw new Error('Broker not found for this company');
+    }
   }
 
   const res = await pool.query(
     `
-    UPDATE trips
-    SET
-      source_type = COALESCE($1, source_type),
-      source_driver_id = COALESCE($2, source_driver_id),
-      farm_id = COALESCE($3, farm_id),
-      driver_id = COALESCE($4, driver_id),
-      lifter_id = COALESCE($5, lifter_id),
-      total_birds = COALESCE($6, total_birds),
-      approx_rate = COALESCE($7, approx_rate),
-      trip_date = COALESCE($8, trip_date),
-      trip_time = COALESCE($9, trip_time),
-      contact_name = COALESCE($10, contact_name),
-      contact_phone = COALESCE($11, contact_phone)
-    WHERE id = $12
-      AND company_id = $13
-      AND status != 'CLOSED'
-    RETURNING *
+      UPDATE trips
+      SET
+        source_type = COALESCE($1, source_type),
+        source_driver_id = COALESCE($2, source_driver_id),
+        farm_id = COALESCE($3, farm_id),
+        driver_id = COALESCE($4, driver_id),
+        lifter_id = COALESCE($5, lifter_id),
+        total_birds = COALESCE($6, total_birds),
+        approx_rate = COALESCE($7, approx_rate),
+        trip_date = COALESCE($8, trip_date),
+        trip_time = COALESCE($9, trip_time),
+        contact_name = COALESCE($10, contact_name),
+        contact_phone = COALESCE($11, contact_phone),
+
+        broker_id = CASE
+          WHEN $12::boolean THEN $13::integer
+          ELSE broker_id
+        END
+
+      WHERE id = $14
+        AND company_id = $15
+        AND status != 'CLOSED'
+
+      RETURNING *
     `,
     [
-      source_type,
-      source_driver_id,
-      farm_id,
-      driver_id,
-      lifter_id,
-      total_birds,
-      approx_rate ? Number(approx_rate) : null,
-      trip_date,
-      trip_time,
-      contact_name || null,
-      contact_phone || null,
-      tripId,
-      companyId,
+      source_type ?? null,             // $1
+      source_driver_id ?? null,        // $2
+      farm_id ?? null,                 // $3
+      driver_id ?? null,               // $4
+      lifter_id ?? null,               // $5
+      total_birds ?? null,             // $6
+      approx_rate !== undefined &&
+      approx_rate !== null &&
+      approx_rate !== ''
+        ? Number(approx_rate)
+        : null,                        // $7
+      trip_date ?? null,               // $8
+      trip_time ?? null,               // $9
+      contact_name ?? null,            // $10
+      contact_phone ?? null,           // $11
+      broker_id !== undefined,         // $12
+      normalizedBrokerId,              // $13
+      tripId,                          // $14
+      companyId,                       // $15
     ]
   );
 
@@ -1730,13 +1801,14 @@ exports.getSalesReport = async (companyId, filters) => {
     rows: res.rows,
   };
 };
-exports.getTripReport = async (companyId, filters) => {
+
+exports.getTripReport = async (companyId, filters = {}) => {
   const {
     startDate = null,
     endDate = null,
     farmerId = null,
     driverId = null,
-  } = filters || {};
+  } = filters;
 
   const result = await pool.query(
     `
@@ -1744,99 +1816,108 @@ exports.getTripReport = async (companyId, filters) => {
       t.id AS trip_id,
       t.trip_date,
       t.total_birds,
+      t.farm_id,
 
-      fr.name AS farmer_name,
+      f.id AS farmer_id,
+      f.name AS farmer_name,
+      f.mobile AS farmer_mobile,
+
+      fa.location AS farm_name,
+      fa.location AS farm_location,
+
       u.name AS driver_name,
 
-      COALESCE(SUM(s.total_amount), 0) AS total_sales,
-      COALESCE(SUM(s.cash_amount), 0) AS cash_received,
-      COALESCE(SUM(s.upi_amount), 0) AS upi_received,
+      COALESCE(s.total_sales, 0) AS total_sales,
+      COALESCE(s.cash_received, 0) AS cash_received,
+      COALESCE(s.upi_received, 0) AS upi_received,
+      COALESCE(s.pending_amount, 0) AS pending_amount,
+      COALESCE(s.total_weight, 0) AS total_weight,
 
-      COALESCE(
-        SUM(s.total_amount) -
-        SUM(COALESCE(s.cash_amount, 0) + COALESCE(s.upi_amount, 0)),
-        0
-      ) AS pending_amount,
+      COALESCE(e.diesel_expense, 0) AS diesel_expense,
+      COALESCE(e.driver_expense, 0) AS driver_expense,
+      COALESCE(e.other_expense, 0) AS other_expense,
+      COALESCE(e.purchase_rate_per_kg, 0) AS purchase_rate_per_kg,
+      e.expense_created_at,
 
-      COALESCE(SUM(s.weight), 0) AS total_weight,
+      COALESCE(s.total_weight, 0)
+        * COALESCE(e.purchase_rate_per_kg, 0) AS purchase_cost,
 
-      COALESCE(MAX(e.diesel_expense), 0) AS diesel_expense,
-      COALESCE(MAX(e.driver_expense), 0) AS driver_expense,
-      COALESCE(MAX(e.other_expense), 0) AS other_expense,
+      COALESCE(e.diesel_expense, 0)
+        + COALESCE(e.driver_expense, 0)
+        + COALESCE(e.other_expense, 0) AS total_expense,
 
-      COALESCE(MAX(e.purchase_rate_per_kg), 0) AS purchase_rate_per_kg,
-
-      MAX(e.created_at) AS expense_created_at,
-
-      (
-        COALESCE(SUM(s.weight), 0) *
-        COALESCE(MAX(e.purchase_rate_per_kg), 0)
-      ) AS purchase_cost,
-
-      (
-        COALESCE(MAX(e.diesel_expense), 0) +
-        COALESCE(MAX(e.driver_expense), 0) +
-        COALESCE(MAX(e.other_expense), 0)
-      ) AS total_expense,
-
-      (
-        COALESCE(SUM(s.total_amount), 0)
-        -
-        (
-          COALESCE(SUM(s.weight), 0) *
-          COALESCE(MAX(e.purchase_rate_per_kg), 0)
-        )
-        -
-        (
-          COALESCE(MAX(e.diesel_expense), 0) +
-          COALESCE(MAX(e.driver_expense), 0) +
-          COALESCE(MAX(e.other_expense), 0)
-        )
-      ) AS profit_loss
+      COALESCE(s.total_sales, 0)
+        - (
+            COALESCE(s.total_weight, 0)
+            * COALESCE(e.purchase_rate_per_kg, 0)
+          )
+        - (
+            COALESCE(e.diesel_expense, 0)
+            + COALESCE(e.driver_expense, 0)
+            + COALESCE(e.other_expense, 0)
+          ) AS profit_loss
 
     FROM trips t
 
     LEFT JOIN farms fa
       ON fa.id = t.farm_id
 
-    LEFT JOIN farmers fr
-      ON fr.id = fa.farmer_id
+    LEFT JOIN farmers f
+      ON f.id = fa.farmer_id
+      AND f.company_id = t.company_id
 
     LEFT JOIN users u
       ON u.id = t.driver_id
 
-    LEFT JOIN sales s
-      ON s.trip_id = t.id
+    LEFT JOIN (
+      SELECT
+        trip_id,
+        SUM(COALESCE(total_amount, 0)) AS total_sales,
+        SUM(COALESCE(cash_amount, 0)) AS cash_received,
+        SUM(COALESCE(upi_amount, 0)) AS upi_received,
+        SUM(
+          COALESCE(total_amount, 0)
+          - COALESCE(cash_amount, 0)
+          - COALESCE(upi_amount, 0)
+        ) AS pending_amount,
+        SUM(COALESCE(weight, 0)) AS total_weight
+      FROM sales
+      GROUP BY trip_id
+    ) s ON s.trip_id = t.id
 
-    LEFT JOIN expenses e
-      ON e.trip_id = t.id
+    LEFT JOIN (
+      SELECT
+        trip_id,
+        SUM(COALESCE(diesel_expense, 0)) AS diesel_expense,
+        SUM(COALESCE(driver_expense, 0)) AS driver_expense,
+        SUM(COALESCE(other_expense, 0)) AS other_expense,
+        MAX(COALESCE(purchase_rate_per_kg, 0))
+          AS purchase_rate_per_kg,
+        MAX(created_at) AS expense_created_at
+      FROM expenses
+      GROUP BY trip_id
+    ) e ON e.trip_id = t.id
 
     WHERE t.company_id = $1
       AND ($2::date IS NULL OR t.trip_date >= $2)
       AND ($3::date IS NULL OR t.trip_date <= $3)
-      AND ($4::int IS NULL OR fr.id = $4)
+      AND ($4::int IS NULL OR f.id = $4)
       AND ($5::int IS NULL OR t.driver_id = $5)
 
-    GROUP BY
-      t.id,
-      t.trip_date,
-      t.total_birds,
-      fr.name,
-      u.name
-
-    ORDER BY t.trip_date DESC
+    ORDER BY t.trip_date DESC, t.trip_time DESC
     `,
     [
       companyId,
-      startDate,
-      endDate,
-      farmerId,
-      driverId,
+      startDate || null,
+      endDate || null,
+      farmerId || null,
+      driverId || null,
     ]
   );
 
   return result.rows;
 };
+
 exports.getTripSalesDetails = async (tripId) => {
   const result = await pool.query(
     `
@@ -1923,4 +2004,133 @@ exports.getCustomerSalesDetails = async (companyId, customerId) => {
   );
 
   return result.rows;
+};
+
+/* ================= BROKERS ================= */
+
+exports.createBroker = async (companyId, { name, number }) => {
+  const brokerName = typeof name === 'string' ? name.trim() : '';
+  const brokerNumber =
+    number !== undefined && number !== null
+      ? String(number).trim()
+      : '';
+
+  if (!brokerName) {
+    throw new Error('Broker name is required');
+  }
+
+  if (!brokerNumber) {
+    throw new Error('Broker number is required');
+  }
+
+  const result = await pool.query(
+    `
+      INSERT INTO brokers (
+        company_id,
+        name,
+        number
+      )
+      VALUES ($1, $2, $3)
+      RETURNING *
+    `,
+    [companyId, brokerName, brokerNumber]
+  );
+
+  return {
+    message: 'Broker created successfully',
+    broker: result.rows[0],
+  };
+};
+
+
+exports.getBrokers = async (companyId) => {
+  const result = await pool.query(
+    `
+      SELECT
+        id,
+        company_id,
+        name,
+        number,
+        created_at,
+        updated_at
+      FROM brokers
+      WHERE company_id = $1
+      ORDER BY created_at DESC, id DESC
+    `,
+    [companyId]
+  );
+
+  return result.rows;
+};
+
+
+exports.updateBroker = async (companyId, brokerId, data) => {
+  const { name, number } = data;
+
+  if (name === undefined && number === undefined) {
+    throw new Error('Nothing to update');
+  }
+
+  let brokerName = null;
+  let brokerNumber = null;
+
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim()) {
+      throw new Error('Broker name cannot be empty');
+    }
+
+    brokerName = name.trim();
+  }
+
+  if (number !== undefined) {
+    if (number === null || !String(number).trim()) {
+      throw new Error('Broker number cannot be empty');
+    }
+
+    brokerNumber = String(number).trim();
+  }
+
+  const result = await pool.query(
+    `
+      UPDATE brokers
+      SET
+        name = COALESCE($1, name),
+        number = COALESCE($2, number),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+        AND company_id = $4
+      RETURNING *
+    `,
+    [brokerName, brokerNumber, brokerId, companyId]
+  );
+
+  if (!result.rows.length) {
+    throw new Error('Broker not found');
+  }
+
+  return {
+    message: 'Broker updated successfully',
+    broker: result.rows[0],
+  };
+};
+
+
+exports.deleteBroker = async (companyId, brokerId) => {
+  const result = await pool.query(
+    `
+      DELETE FROM brokers
+      WHERE id = $1
+        AND company_id = $2
+      RETURNING id
+    `,
+    [brokerId, companyId]
+  );
+
+  if (!result.rows.length) {
+    throw new Error('Broker not found');
+  }
+
+  return {
+    message: 'Broker deleted successfully',
+  };
 };
