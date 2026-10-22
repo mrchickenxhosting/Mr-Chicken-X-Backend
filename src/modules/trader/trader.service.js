@@ -2823,11 +2823,51 @@ exports.getTripDC = async (user, tripId) => {
     throw error;
   }
 
+  // 1. Fetch trip details and validate company access
   const tripRes = await pool.query(
-    `SELECT id, company_id, status
-     FROM trips
-     WHERE id = $1
-       AND company_id = $2`,
+    `
+    SELECT
+      t.id,
+      t.company_id,
+      t.status,
+      t.trip_date,
+      t.trip_time,
+
+      -- Trader details
+      c.company_name AS trader_name,
+      trader.mobile AS trader_number,
+
+      -- Farmer and farm details
+      f.name AS farmer_name,
+      f.mobile AS farmer_number,
+      COALESCE(t.farm_location, fa.location) AS farm_location,
+
+      -- Driver details
+      driver.name AS driver_name,
+      driver.mobile AS driver_number
+
+    FROM trips t
+
+    JOIN companies c
+      ON c.id = t.company_id
+
+    JOIN users trader
+      ON trader.id = c.owner_user_id
+
+    LEFT JOIN farms fa
+      ON fa.id = t.farm_id
+
+    LEFT JOIN farmers f
+      ON f.id = fa.farmer_id
+     AND f.company_id = t.company_id
+
+    LEFT JOIN users driver
+      ON driver.id = t.driver_id
+     AND driver.company_id = t.company_id
+
+    WHERE t.id = $1
+      AND t.company_id = $2
+    `,
     [tripId, companyId]
   );
 
@@ -2847,57 +2887,82 @@ exports.getTripDC = async (user, tripId) => {
     throw error;
   }
 
+  // 2. Calculate original cage quantities:
+  // remaining stock + quantities already sold
   const result = await pool.query(
-  `
-  WITH remaining_stock AS (
+    `
+    WITH remaining_stock AS (
+      SELECT
+        tc.id AS trip_cage_id,
+        tc.cage_number,
+        COALESCE(SUM(tce.bird_count), 0) AS remaining_birds,
+        COALESCE(SUM(tce.weight), 0) AS remaining_weight
+      FROM trip_cages tc
+      LEFT JOIN trip_cage_entries tce
+        ON tce.trip_cage_id = tc.id
+      WHERE tc.trip_id = $1
+      GROUP BY tc.id, tc.cage_number
+    ),
+    sold_stock AS (
+      SELECT
+        s.cage_number,
+        COALESCE(SUM(s.bird_count), 0) AS sold_birds,
+        COALESCE(SUM(s.weight), 0) AS sold_weight
+      FROM sales s
+      WHERE s.trip_id = $1
+        AND UPPER(COALESCE(s.sell_type, '')) <> 'PAYMENT'
+      GROUP BY s.cage_number
+    )
     SELECT
-      tc.id AS trip_cage_id,
-      tc.cage_number,
-      COALESCE(SUM(tce.bird_count), 0) AS remaining_birds,
-      COALESCE(SUM(tce.weight), 0) AS remaining_weight
-    FROM trip_cages tc
-    LEFT JOIN trip_cage_entries tce
-      ON tce.trip_cage_id = tc.id
-    WHERE tc.trip_id = $1
-    GROUP BY tc.id, tc.cage_number
-  ),
-  sold_stock AS (
-    SELECT
-      s.cage_number,
-      COALESCE(SUM(s.bird_count), 0) AS sold_birds,
-      COALESCE(SUM(s.weight), 0) AS sold_weight
-    FROM sales s
-    WHERE s.trip_id = $1
-      AND UPPER(COALESCE(s.sell_type, '')) <> 'PAYMENT'
-    GROUP BY s.cage_number
-  )
-  SELECT
-    r.cage_number,
-    (
-      r.remaining_birds + COALESCE(s.sold_birds, 0)
-    )::int AS total_birds,
-    (
-      r.remaining_weight + COALESCE(s.sold_weight, 0)
-    )::numeric AS total_weight
-  FROM remaining_stock r
-  LEFT JOIN sold_stock s
-    ON s.cage_number::text = r.cage_number::text
-  ORDER BY r.cage_number ASC
-  `,
-  [tripId]
-);
+      r.cage_number,
+      (
+        r.remaining_birds + COALESCE(s.sold_birds, 0)
+      )::int AS total_birds,
+      (
+        r.remaining_weight + COALESCE(s.sold_weight, 0)
+      )::numeric AS total_weight
+    FROM remaining_stock r
+    LEFT JOIN sold_stock s
+      ON s.cage_number::text = r.cage_number::text
+    ORDER BY r.cage_number ASC
+    `,
+    [tripId]
+  );
 
-const cages = result.rows.map((row) => ({
-  cage_number: row.cage_number,
-  total_birds: Number(row.total_birds || 0),
-  total_weight: Number(row.total_weight || 0),
-}));
+  const cages = result.rows.map((row) => ({
+    cage_number: row.cage_number,
+    total_birds: Number(row.total_birds || 0),
+    total_weight: Number(row.total_weight || 0),
+  }));
 
-return {
-  trip_id: Number(tripId),
-  total_cages: cages.length,
-  total_birds: cages.reduce((sum, cage) => sum + cage.total_birds, 0),
-  total_weight: cages.reduce((sum, cage) => sum + cage.total_weight, 0),
-  cages,
-};
+  // 3. Return trip, party, and cage details
+  return {
+    trip_id: Number(trip.id),
+    company_id: Number(trip.company_id),
+    status: trip.status,
+
+    trip_date: trip.trip_date,
+    trip_time: trip.trip_time,
+
+    trader_name: trip.trader_name || '',
+    trader_number: trip.trader_number || '',
+
+    farmer_name: trip.farmer_name || '',
+    farmer_number: trip.farmer_number || '',
+    farm_location: trip.farm_location || '',
+
+    driver_name: trip.driver_name || '',
+    driver_number: trip.driver_number || '',
+
+    total_cages: cages.length,
+    total_birds: cages.reduce(
+      (sum, cage) => sum + cage.total_birds,
+      0
+    ),
+    total_weight: cages.reduce(
+      (sum, cage) => sum + cage.total_weight,
+      0
+    ),
+    cages,
+  };
 };
