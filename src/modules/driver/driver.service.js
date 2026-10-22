@@ -507,17 +507,19 @@ exports.getTripCages = async (user, tripId) => {
 //   }
 // };
 
+
 exports.sellToCustomer = async (user, tripId, data) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     await client.query('BEGIN');
+    transactionStarted = true;
 
     const {
       customer_id,
       target_driver_id,
       sale_target_type,
-
       cage_numbers,
       sell_type,
       bird_count,
@@ -530,56 +532,59 @@ exports.sellToCustomer = async (user, tripId, data) => {
     } = data;
 
     // =========================================================
-    // ✅ PAYMENT ONLY CHECK
+    // 1. NORMALIZE AND VALIDATE INPUT
     // =========================================================
 
-    const isPaymentOnly =
-      Number(total_amount) > 0 &&
-      Number(bird_count) === 0 &&
-      Number(weight) === 0 &&
-      (!sell_type || cage_numbers?.length === 0);
+    const targetType = String(sale_target_type || '').toUpperCase();
+    const saleType = String(sell_type || '').toUpperCase();
+    const paymentMode = String(payment_mode || '').toUpperCase();
 
-    // =========================================================
-    // ✅ VALIDATION
-    // =========================================================
+    const isCustomerSale = targetType === 'CUSTOMER';
+    const isDriverTransfer = targetType === 'DRIVER';
 
-    const isCustomerSale =
-      sale_target_type === 'CUSTOMER';
+    const cash = Number(cash_amount);
+    const upi = Number(upi_amount);
+    const requestedBirds = Number(bird_count || 0);
+    const requestedWeight = Number(weight || 0);
+    const saleRate = Number(rate || 0);
+    const suppliedTotal = Number(total_amount || 0);
 
-    const isDriverTransfer =
-      sale_target_type === 'DRIVER';
+    if (!isCustomerSale && !isDriverTransfer) {
+      throw new Error('Invalid sale target type');
+    }
 
-    if (
-      (!isCustomerSale && !isDriverTransfer) ||
-      !payment_mode
-    ) {
-      throw new Error('Invalid target type');
+    if (!paymentMode) {
+      throw new Error('Payment mode is required');
     }
 
     if (
-      isCustomerSale &&
-      !customer_id
+      !Number.isFinite(cash) ||
+      !Number.isFinite(upi) ||
+      cash < 0 ||
+      upi < 0
     ) {
-      throw new Error('Customer required');
+      throw new Error('Cash and UPI amounts must be valid non-negative numbers');
     }
 
     if (
-      isDriverTransfer &&
-      !target_driver_id
+      !Number.isFinite(requestedBirds) ||
+      !Number.isFinite(requestedWeight) ||
+      !Number.isFinite(saleRate) ||
+      !Number.isFinite(suppliedTotal) ||
+      requestedBirds < 0 ||
+      requestedWeight < 0 ||
+      saleRate < 0 ||
+      suppliedTotal < 0
     ) {
-      throw new Error('Target driver required');
+      throw new Error('Invalid sale amount, bird count, weight, or rate');
     }
 
-    if (
-      !isPaymentOnly &&
-      (
-        !Array.isArray(cage_numbers) ||
-        cage_numbers.length === 0 ||
-        !sell_type ||
-        !rate
-      )
-    ) {
-      throw new Error('Incomplete sale data');
+    if (isCustomerSale && !customer_id) {
+      throw new Error('Customer is required');
+    }
+
+    if (isDriverTransfer && !target_driver_id) {
+      throw new Error('Target driver is required');
     }
 
     if (
@@ -588,8 +593,42 @@ exports.sellToCustomer = async (user, tripId, data) => {
     ) {
       throw new Error('Cannot transfer to yourself');
     }
+
+    const selectedCages = Array.isArray(cage_numbers)
+      ? [...new Set(cage_numbers.map(String))]
+      : [];
+
+    const isPaymentOnly =
+      suppliedTotal > 0 &&
+      requestedBirds === 0 &&
+      requestedWeight === 0 &&
+      !sell_type &&
+      selectedCages.length === 0;
+
+    if (!isPaymentOnly) {
+      if (selectedCages.length === 0) {
+        throw new Error('Select at least one cage');
+      }
+
+      if (!['FULL', 'CUSTOM'].includes(saleType)) {
+        throw new Error('Sell type must be FULL or CUSTOM');
+      }
+
+      if (saleRate <= 0) {
+        throw new Error('Rate must be greater than zero');
+      }
+
+      if (saleType === 'CUSTOM') {
+        if (requestedBirds <= 0 || requestedWeight <= 0) {
+          throw new Error(
+            'Custom sale requires a positive bird count and weight'
+          );
+        }
+      }
+    }
+
     // =========================================================
-    // ✅ CHECK TRIP
+    // 2. LOCK AND VALIDATE TRIP
     // =========================================================
 
     const tripRes = await client.query(
@@ -608,78 +647,145 @@ exports.sellToCustomer = async (user, tripId, data) => {
       throw new Error('Trip not ready for selling');
     }
 
+    const trip = tripRes.rows[0];
+
     // =========================================================
-    // ✅ PAYMENT ONLY FLOW
+    // 3. LOCK CUSTOMER AND READ CREDIT SETTINGS
+    // =========================================================
+
+    let customer = null;
+    let customerType = null;
+    let customerOutstanding = 0;
+    let customerCreditLimit = 0;
+    let creditWarning = null;
+
+    if (isCustomerSale) {
+      const customerRes = await client.query(
+        `
+        SELECT
+          id,
+          company_id,
+          name,
+          customer_type,
+          credit_limit,
+          outstanding
+        FROM customers
+        WHERE id = $1
+          AND company_id = $2
+        FOR UPDATE
+        `,
+        [customer_id, trip.company_id]
+      );
+
+      if (!customerRes.rows.length) {
+        throw new Error('Customer not found for this company');
+      }
+
+      customer = customerRes.rows[0];
+
+      customerType = String(
+        customer.customer_type || 'GREEN'
+      ).toUpperCase();
+
+      if (!['GREEN', 'ORANGE', 'RED'].includes(customerType)) {
+        throw new Error('Invalid customer credit type');
+      }
+
+      customerOutstanding = Number(customer.outstanding || 0);
+      customerCreditLimit = Number(customer.credit_limit || 0);
+
+      if (
+        !Number.isFinite(customerOutstanding) ||
+        customerOutstanding < 0 ||
+        !Number.isFinite(customerCreditLimit) ||
+        customerCreditLimit < 0
+      ) {
+        throw new Error('Invalid customer credit settings');
+      }
+    }
+
+    // =========================================================
+    // 4. PAYMENT-ONLY FLOW
     // =========================================================
 
     if (isPaymentOnly) {
+      if (!isCustomerSale) {
+        throw new Error('Payment-only entries are supported for customers only');
+      }
 
-      const paymentAmount =
-        Number(cash_amount || 0) +
-        Number(upi_amount || 0);
+      const paymentAmount = Number((cash + upi).toFixed(2));
 
-      // ✅ INSERT PAYMENT ENTRY
+      if (paymentAmount <= 0) {
+        throw new Error('Payment amount must be greater than zero');
+      }
+
+      if (paymentAmount > customerOutstanding) {
+        throw new Error(
+          `Payment exceeds the outstanding balance of ${customerOutstanding.toFixed(2)}`
+        );
+      }
+
       await client.query(
         `
         INSERT INTO sales (
-  trip_id,
-  customer_id,
-  target_driver_id,
-  sale_target_type,
-  cage_number,
-  sell_type,
-  bird_count,
-  weight,
-  rate,
-  total_amount,
-  payment_mode,
-  cash_amount,
-  upi_amount
-)
-VALUES (
-  $1,$2,$3,$4,0,'PAYMENT',0,0,0,$5,$6,$7,$8
-)
+          trip_id,
+          customer_id,
+          target_driver_id,
+          sale_target_type,
+          cage_number,
+          sell_type,
+          bird_count,
+          weight,
+          rate,
+          total_amount,
+          payment_mode,
+          cash_amount,
+          upi_amount
+        )
+        VALUES ($1, $2, NULL, 'CUSTOMER', 0, 'PAYMENT',
+                0, 0, 0, $3, $4, $5, $6)
         `,
         [
           tripId,
           customer_id,
-          target_driver_id,
-          sale_target_type,
           paymentAmount,
-          payment_mode,
-          Number(cash_amount || 0),
-          Number(upi_amount || 0),
+          paymentMode,
+          cash,
+          upi,
         ]
       );
 
-      // ✅ DEDUCT CUSTOMER OUTSTANDING
+      const updatedOutstanding = Number(
+        Math.max(0, customerOutstanding - paymentAmount).toFixed(2)
+      );
+
       await client.query(
         `
         UPDATE customers
-        SET outstanding = GREATEST(
-          outstanding - $1,
-          0
-        )
+        SET outstanding = $1
         WHERE id = $2
+          AND company_id = $3
         `,
-        [paymentAmount, customer_id]
+        [updatedOutstanding, customer_id, trip.company_id]
       );
 
       await client.query('COMMIT');
+      transactionStarted = false;
 
       return {
-        message: 'Payment recorded successfully'
+        message: 'Payment recorded successfully',
+        payment_amount: paymentAmount,
+        outstanding: updatedOutstanding,
       };
     }
 
     // =========================================================
-    // 🔥 FETCH SELECTED CAGES WITH LOCK
+    // 5. FETCH SELECTED CAGES AND LOCK INVENTORY ROWS
     // =========================================================
 
     const cageData = [];
 
-    for (const cageNumber of cage_numbers) {
-
+    for (const cageNumber of selectedCages) {
       const cageRes = await client.query(
         `
         SELECT
@@ -693,7 +799,8 @@ VALUES (
           ON e.trip_cage_id = c.id
         WHERE c.trip_id = $1
           AND c.cage_number = $2
-        FOR UPDATE
+        ORDER BY e.id
+        FOR UPDATE OF c, e
         `,
         [tripId, cageNumber]
       );
@@ -706,7 +813,7 @@ VALUES (
     }
 
     // =========================================================
-    // 🔥 TOTAL AVAILABLE CHECK
+    // 6. VALIDATE INVENTORY AND BUILD SALE BREAKDOWN
     // =========================================================
 
     const totalAvailableBirds = cageData.reduce(
@@ -714,48 +821,50 @@ VALUES (
       0
     );
 
+    const totalAvailableWeight = cageData.reduce(
+      (sum, row) => sum + Number(row.weight || 0),
+      0
+    );
+
     if (
-      sell_type === 'CUSTOM' &&
-      Number(bird_count) > totalAvailableBirds
+      cageData.some(
+        (row) =>
+          !Number.isFinite(Number(row.bird_count)) ||
+          !Number.isFinite(Number(row.weight)) ||
+          Number(row.bird_count) < 0 ||
+          Number(row.weight) < 0
+      )
     ) {
+      throw new Error('Invalid cage inventory detected');
+    }
+
+    if (saleType === 'CUSTOM' && requestedBirds > totalAvailableBirds) {
       throw new Error('Not enough birds available');
     }
 
-    let birdsRemaining = Number(bird_count || 0);
-
-    // =========================================================
-    // 🔥 AVG WEIGHT PER BIRD
-    // =========================================================
+    if (saleType === 'CUSTOM' && requestedWeight > totalAvailableWeight) {
+      throw new Error('Not enough weight available in the selected cages');
+    }
 
     const avgWeightPerBird =
-      sell_type === 'CUSTOM'
-        ? Number(weight) / Number(bird_count)
+      saleType === 'CUSTOM'
+        ? requestedWeight / requestedBirds
         : 0;
 
-    // =========================================================
-    // 🔥 PROCESS CAGES
-    // =========================================================
+    let birdsRemaining = requestedBirds;
+    let weightRemaining = requestedWeight;
+    let actualSaleAmount = 0;
+
+    const plannedSales = [];
 
     for (const row of cageData) {
-
       let birdsToSell = 0;
       let weightToSell = 0;
 
-      // =====================================================
-      // FULL CAGE SELL
-      // =====================================================
-
-      if (sell_type === 'FULL') {
-
+      if (saleType === 'FULL') {
         birdsToSell = Number(row.bird_count);
         weightToSell = Number(row.weight);
-
       } else {
-
-        // ===================================================
-        // CUSTOM SELL
-        // ===================================================
-
         if (birdsRemaining <= 0) break;
 
         birdsToSell = Math.min(
@@ -763,144 +872,283 @@ VALUES (
           birdsRemaining
         );
 
-        weightToSell = Number(
-          (
-            birdsToSell * avgWeightPerBird
-          ).toFixed(2)
+        if (birdsToSell <= 0) continue;
+
+        // Keep the final selected portion aligned with the requested
+        // weight despite rounding on earlier cage allocations.
+        if (birdsToSell === birdsRemaining) {
+          weightToSell = Number(weightRemaining.toFixed(2));
+        } else {
+          weightToSell = Number(
+            (birdsToSell * avgWeightPerBird).toFixed(2)
+          );
+        }
+
+        weightToSell = Math.min(
+          weightToSell,
+          Number(row.weight),
+          weightRemaining
         );
 
         birdsRemaining -= birdsToSell;
+        weightRemaining = Number(
+          (weightRemaining - weightToSell).toFixed(2)
+        );
       }
 
       if (birdsToSell <= 0) continue;
 
-      // =====================================================
-      // CALCULATE SALE AMOUNT
-      // =====================================================
+      if (
+        weightToSell < 0 ||
+        weightToSell > Number(row.weight) + 0.001
+      ) {
+        throw new Error(`Invalid weight allocation for cage ${row.cage_number}`);
+      }
 
       const amountToSell = Number(
-        (
-          weightToSell * Number(rate)
-        ).toFixed(2)
+        (weightToSell * saleRate).toFixed(2)
       );
 
-      // =====================================================
-      // 🔥 PROPORTIONAL PAYMENT SPLIT
-      // =====================================================
+      actualSaleAmount = Number(
+        (actualSaleAmount + amountToSell).toFixed(2)
+      );
 
-      const proportionalCash =
-        total_amount > 0
-          ? (amountToSell / total_amount) * cash_amount
-          : 0;
+      plannedSales.push({
+        row,
+        birdsToSell,
+        weightToSell,
+        amountToSell,
+      });
+    }
 
-      const proportionalUpi =
-        total_amount > 0
-          ? (amountToSell / total_amount) * upi_amount
-          : 0;
+    if (!plannedSales.length || actualSaleAmount <= 0) {
+      throw new Error('Sale amount must be greater than zero');
+    }
 
-      // =====================================================
-      // ✅ INSERT SALE
-      // =====================================================
+    if (saleType === 'CUSTOM' && birdsRemaining > 0) {
+      throw new Error('Could not allocate all requested birds');
+    }
+
+    if (
+      saleType === 'CUSTOM' &&
+      Math.abs(weightRemaining) > 0.02
+    ) {
+      throw new Error('Could not allocate the requested weight');
+    }
+
+    // =========================================================
+    // 7. VALIDATE PAYMENT AGAINST THE SERVER-CALCULATED SALE
+    // =========================================================
+
+    const paymentReceived = Number((cash + upi).toFixed(2));
+
+    if (paymentReceived > actualSaleAmount + 0.001) {
+      throw new Error(
+        'Payment cannot exceed the calculated sale amount'
+      );
+    }
+
+    const newOutstanding = isCustomerSale
+      ? Number(
+          Math.max(
+            0,
+            customerOutstanding + actualSaleAmount - paymentReceived
+          ).toFixed(2)
+        )
+      : null;
+
+    // =========================================================
+// 7. ENFORCE CUSTOMER CREDIT RULES
+// =========================================================
+
+// RED: The full amount of the current sale must be paid.
+if (
+  isCustomerSale &&
+  customerType === 'RED' &&
+  paymentReceived + 0.001 < actualSaleAmount
+) {
+  throw new Error(
+    'RED customer: full payment is required before completing the sale'
+  );
+}
+
+// ORANGE:
+// - credit_limit = 0: no credit allowed; full current sale must be paid.
+// - credit_limit > 0: outstanding after this sale cannot exceed the limit.
+if (isCustomerSale && customerType === 'ORANGE') {
+  if (
+    customerCreditLimit === 0 &&
+    paymentReceived + 0.001 < actualSaleAmount
+  ) {
+    throw new Error(
+      'ORANGE customer: full payment is required because the credit limit is zero'
+    );
+  }
+
+  if (
+    customerCreditLimit > 0 &&
+    newOutstanding > customerCreditLimit
+  ) {
+    throw new Error(
+      `Credit limit exceeded. Current outstanding: ${customerOutstanding.toFixed(2)}, ` +
+      `new outstanding: ${newOutstanding.toFixed(2)}, ` +
+      `credit limit: ${customerCreditLimit.toFixed(2)}`
+    );
+  }
+}
+
+// GREEN: Allow the sale even when outstanding exceeds a positive limit,
+// but return a warning to the frontend.
+if (
+  isCustomerSale &&
+  customerType === 'GREEN' &&
+  customerCreditLimit > 0 &&
+  newOutstanding > customerCreditLimit
+) {
+  creditWarning =
+    `Warning: This GREEN customer's outstanding balance will exceed ` +
+    `the credit limit of ₹${customerCreditLimit.toFixed(2)}. ` +
+    `New outstanding: ₹${newOutstanding.toFixed(2)}. The sale was allowed.`;
+}
+
+    // =========================================================
+    // 8. ALLOCATE CASH AND UPI PROPORTIONALLY ACROSS CAGE SALES
+    // =========================================================
+
+    let allocatedCash = 0;
+    let allocatedUpi = 0;
+
+    for (let i = 0; i < plannedSales.length; i += 1) {
+      const sale = plannedSales[i];
+      const isLast = i === plannedSales.length - 1;
+
+      let saleCash = 0;
+      let saleUpi = 0;
+
+      if (isLast) {
+        // Put rounding remainders on the final row so totals reconcile.
+        saleCash = Number((cash - allocatedCash).toFixed(2));
+        saleUpi = Number((upi - allocatedUpi).toFixed(2));
+      } else {
+        const proportion = sale.amountToSell / actualSaleAmount;
+
+        saleCash = Number((cash * proportion).toFixed(2));
+        saleUpi = Number((upi * proportion).toFixed(2));
+
+        allocatedCash = Number((allocatedCash + saleCash).toFixed(2));
+        allocatedUpi = Number((allocatedUpi + saleUpi).toFixed(2));
+      }
+
+      sale.cashAmount = saleCash;
+      sale.upiAmount = saleUpi;
+    }
+
+    // =========================================================
+    // 9. INSERT SALES AND DEDUCT STOCK
+    // =========================================================
+
+    for (const sale of plannedSales) {
+      const { row, birdsToSell, weightToSell, amountToSell } = sale;
 
       await client.query(
         `
-   INSERT INTO sales (
-  trip_id,
-  customer_id,
-  target_driver_id,
-  sale_target_type,
-  cage_number,
-  sell_type,
-  bird_count,
-  weight,
-  rate,
-  total_amount,
-  payment_mode,
-  cash_amount,
-  upi_amount
-)
-VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
-)
-        `,
-[
-  tripId,
-  customer_id,
-  target_driver_id,
-  sale_target_type,
-  row.cage_number,
-  sell_type,
-  birdsToSell,
-  weightToSell,
-  rate,
-  amountToSell,
-  payment_mode,
-  Number(proportionalCash.toFixed(2)),
-  Number(proportionalUpi.toFixed(2)),
-]
-      );
-
-      // =====================================================
-      // ✅ DEDUCT STOCK
-      // =====================================================
-
-      await client.query(
-        `
-        UPDATE trip_cage_entries
-        SET bird_count = bird_count - $1,
-            weight = weight - $2
-        WHERE id = $3
+        INSERT INTO sales (
+          trip_id,
+          customer_id,
+          target_driver_id,
+          sale_target_type,
+          cage_number,
+          sell_type,
+          bird_count,
+          weight,
+          rate,
+          total_amount,
+          payment_mode,
+          cash_amount,
+          upi_amount
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         `,
         [
+          tripId,
+          isCustomerSale ? customer_id : null,
+          isDriverTransfer ? target_driver_id : null,
+          targetType,
+          row.cage_number,
+          saleType,
           birdsToSell,
           weightToSell,
-          row.entry_id
+          saleRate,
+          amountToSell,
+          paymentMode,
+          sale.cashAmount,
+          sale.upiAmount,
         ]
+      );
+
+      const stockUpdate = await client.query(
+        `
+        UPDATE trip_cage_entries
+        SET
+          bird_count = bird_count - $1,
+          weight = GREATEST(0, weight - $2)
+        WHERE id = $3
+          AND bird_count >= $1
+          AND weight >= $2
+        `,
+        [birdsToSell, weightToSell, row.entry_id]
+      );
+
+      if (stockUpdate.rowCount !== 1) {
+        throw new Error(
+          `Inventory changed while processing cage ${row.cage_number}. Please retry.`
+        );
+      }
+    }
+
+    // =========================================================
+    // 10. UPDATE CUSTOMER OUTSTANDING
+    // =========================================================
+
+    if (isCustomerSale) {
+      await client.query(
+        `
+        UPDATE customers
+        SET outstanding = $1
+        WHERE id = $2
+          AND company_id = $3
+        `,
+        [newOutstanding, customer_id, trip.company_id]
       );
     }
 
     // =========================================================
-    // ✅ UPDATE CUSTOMER OUTSTANDING
+    // 11. COMMIT
     // =========================================================
 
-  const paymentReceived =
-  Number(cash_amount || 0) +
-  Number(upi_amount || 0);
-
-if (sale_target_type === 'CUSTOMER') {
-  await client.query(
-    `
-    UPDATE customers
-    SET outstanding = GREATEST(
-      outstanding + $1 - $2,
-      0
-    )
-    WHERE id = $3
-    `,
-    [
-      Number(total_amount),
-      paymentReceived,
-      customer_id,
-    ]
-  );
-}
     await client.query('COMMIT');
+    transactionStarted = false;
 
     return {
-      message: 'Sale recorded successfully'
+      message: isDriverTransfer
+        ? 'Driver transfer recorded successfully'
+        : 'Sale recorded successfully',
+      sale_amount: actualSaleAmount,
+      payment_received: paymentReceived,
+      outstanding: isCustomerSale ? newOutstanding : undefined,
+      credit_warning: creditWarning,
     };
-
   } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Transaction rollback failed:', rollbackError);
+      }
+    }
 
-    await client.query('ROLLBACK');
     throw error;
-
   } finally {
-
     client.release();
   }
 };
-
-
-
-

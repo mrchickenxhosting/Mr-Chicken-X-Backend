@@ -411,24 +411,51 @@ exports.getAllCustomersOutstanding = async (req, res) => {
 
 exports.createTrip = async (req, res) => {
   try {
+    const {
+      source_type,
+      source_driver_id,
+      farm_id,
+      driver_id,
+      lifter_id,
+      broker_id,
+      total_birds,
+      minimum_weight,
+      approx_rate,
+      trip_time,
+      trip_date,
+      contact_name,
+      contact_phone,
+      supervisor_number,
+      on_filling_number,
+      farm_location,
+      farm_number,
+    } = req.body;
+
     const trip = await traderService.createTrip(req.user.companyId, {
-      source_type: req.body.source_type,
-      source_driver_id: req.body.source_driver_id,
-      farm_id: req.body.farm_id,
-      driver_id: req.body.driver_id,
-      lifter_id: req.body.lifter_id,
-      broker_id: req.body.broker_id,
-      total_birds: req.body.total_birds,
-      approx_rate: req.body.approx_rate,
-      trip_time: req.body.trip_time,
-      trip_date: req.body.trip_date,
-      contact_name: req.body.contact_name,
-      contact_phone: req.body.contact_phone,
+      source_type,
+      source_driver_id,
+      farm_id,
+      driver_id,
+      lifter_id,
+      broker_id,
+      total_birds,
+      minimum_weight,
+      approx_rate,
+      trip_time,
+      trip_date,
+      contact_name,
+      contact_phone,
+      supervisor_number,
+      on_filling_number,
+      farm_location,
+      farm_number,
     });
 
     return res.status(201).json(trip);
   } catch (error) {
-    return res.status(400).json({ message: error.message });
+    return res.status(400).json({
+      message: error.message || 'Failed to create trip',
+    });
   }
 };
 
@@ -705,5 +732,85 @@ exports.deleteBroker = async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+};
+
+
+/* ================= BROKER TRIPS ================= */
+
+exports.getBrokerTrips = async (req, res) => {
+  try {
+    if (req.user.role !== 'BROKER') {
+      return res.status(403).json({
+        message: 'Only brokers can access assigned broker trips',
+      });
+    }
+
+    const trips = await traderService.getBrokerTrips(
+      req.user.companyId,
+      req.user.userId
+    );
+
+    return res.json(trips);
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message || 'Failed to fetch broker trips',
+    });
+  }
+};
+
+exports.updateBrokerTrip = async (req, res) => {
+  try {
+    if (req.user.role !== 'BROKER') {
+      return res.status(403).json({
+        message: 'Only brokers can update broker trip details',
+      });
+    }
+
+    const result = await traderService.updateBrokerTrip(
+      req.user.companyId,
+      req.user.userId,
+      req.params.id,
+      req.body
+    );
+
+    return res.json(result);
+  } catch (error) {
+    const status = error.message?.includes('not found') ? 404 : 400;
+
+    return res.status(status).json({
+      message: error.message || 'Failed to update broker trip',
+    });
+  }
+};
+
+
+exports.getTripDC = async (req, res) => {
+  try {
+    const user = req.user;
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Unauthorized: user not found',
+      });
+    }
+
+    const dc = await traderService.getTripDC(
+      user,
+      req.params.tripId
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: dc,
+    });
+  } catch (error) {
+    console.error('Get Trip DC Error:', error);
+
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to generate Delivery Challan',
+    });
   }
 };

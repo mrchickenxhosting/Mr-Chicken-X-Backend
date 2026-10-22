@@ -115,5 +115,30 @@ router.post('/brokers', authMiddleware, traderController.createBroker);
 router.get('/brokers', authMiddleware, traderController.getBrokers);
 router.patch('/brokers/:id', authMiddleware, traderController.updateBroker);
 router.delete('/brokers/:id', authMiddleware, traderController.deleteBroker);
+/* ================= BROKER TRIPS ================= */
+
+// Get trips assigned to the logged-in broker
+router.get(
+  '/broker/trips',
+  authMiddleware,
+  traderController.getBrokerTrips
+);
+
+// Update only permitted fields on a broker-assigned trip
+router.patch(
+  '/broker/trips/:id',
+  authMiddleware,
+  traderController.updateBrokerTrip
+);
+
+
+/* ================= DELIVERY CHALLAN (DC) ================= */
+
+// Get cage-wise bird count and weight for a trip
+router.get(
+  '/trips/:tripId/dc',
+  authMiddleware,
+  traderController.getTripDC
+);
 
 module.exports = router;

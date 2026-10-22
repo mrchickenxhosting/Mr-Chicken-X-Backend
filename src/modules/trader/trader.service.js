@@ -400,6 +400,7 @@ exports.getFarmers = async (companyId) => {
   return Object.values(farmersMap);
 };
 
+
 exports.updateFarmer = async (
   companyId,
   farmerId,
@@ -410,48 +411,140 @@ exports.updateFarmer = async (
   try {
     await client.query('BEGIN');
 
-    // 1️⃣ Check farmer exists
-    const check = await client.query(
-      `SELECT id FROM farmers WHERE id=$1 AND company_id=$2`,
+    // 1. Verify the farmer exists and belongs to this company.
+    const farmerResult = await client.query(
+      `SELECT id
+       FROM farmers
+       WHERE id = $1 AND company_id = $2
+       FOR UPDATE`,
       [farmerId, companyId]
     );
 
-    if (!check.rows.length) {
+    if (!farmerResult.rows.length) {
       throw new Error('Farmer not found');
     }
 
-    // 2️⃣ Update farmer basic info
+    // 2. Update basic farmer information.
     await client.query(
-      `
-      UPDATE farmers
-      SET
-        name = COALESCE($1, name),
-        mobile = COALESCE($2, mobile)
-      WHERE id=$3 AND company_id=$4
-      `,
-      [name, mobile, farmerId, companyId]
+      `UPDATE farmers
+       SET
+         name = COALESCE($1, name),
+         mobile = COALESCE($2, mobile)
+       WHERE id = $3 AND company_id = $4`,
+      [name ?? null, mobile ?? null, farmerId, companyId]
     );
 
-    // 3️⃣ Delete old farms
-    await client.query(
-      `DELETE FROM farms WHERE farmer_id=$1`,
-      [farmerId]
-    );
+    // If farms were not included, leave them unchanged.
+    if (Array.isArray(farms)) {
+      // Lock existing farms belonging to this farmer.
+      const existingResult = await client.query(
+        `SELECT id, location, latitude, longitude
+         FROM farms
+         WHERE farmer_id = $1
+         FOR UPDATE`,
+        [farmerId]
+      );
 
-    // 4️⃣ Insert new farms
-    if (farms && farms.length > 0) {
+      const existingFarmIds = new Set(
+        existingResult.rows.map((farm) => String(farm.id))
+      );
+
+      const retainedFarmIds = new Set();
+
       for (const farm of farms) {
+        if (!farm.location || !farm.location.trim()) {
+          throw new Error('Farm location is required');
+        }
+
+        if (farm.id != null) {
+          const farmId = String(farm.id);
+
+          // Do not allow updating a farm belonging to another farmer.
+          if (!existingFarmIds.has(farmId)) {
+            throw new Error(
+              `Farm ${farm.id} does not belong to this farmer`
+            );
+          }
+
+          if (retainedFarmIds.has(farmId)) {
+            throw new Error(`Duplicate farm ID: ${farm.id}`);
+          }
+
+          // Preserve the existing ID referenced by historical trips.
+          await client.query(
+            `UPDATE farms
+             SET
+               location = $1,
+               latitude = $2,
+               longitude = $3
+             WHERE id = $4 AND farmer_id = $5`,
+            [
+              farm.location.trim(),
+              farm.latitude ?? null,
+              farm.longitude ?? null,
+              farm.id,
+              farmerId,
+            ]
+          );
+
+          retainedFarmIds.add(farmId);
+        } else {
+          // New farm: create it without affecting existing trip references.
+          const insertedFarm = await client.query(
+            `INSERT INTO farms (
+               farmer_id,
+               location,
+               latitude,
+               longitude
+             )
+             VALUES ($1, $2, $3, $4)
+             RETURNING id`,
+            [
+              farmerId,
+              farm.location.trim(),
+              farm.latitude ?? null,
+              farm.longitude ?? null,
+            ]
+          );
+
+          retainedFarmIds.add(String(insertedFarm.rows[0].id));
+        }
+      }
+
+      // 3. Remove farms omitted from the submitted list only if no
+      //    historical trip references them.
+      const removedFarmIds = [...existingFarmIds].filter(
+        (id) => !retainedFarmIds.has(id)
+      );
+
+      if (removedFarmIds.length > 0) {
+        const referencedResult = await client.query(
+          `SELECT DISTINCT farm_id
+           FROM trips
+           WHERE farm_id = ANY($1::int[])`,
+          [removedFarmIds.map(Number)]
+        );
+
+        const referencedFarmIds = new Set(
+          referencedResult.rows.map((row) => String(row.farm_id))
+        );
+
+        const protectedFarmIds = removedFarmIds.filter(
+          (id) => referencedFarmIds.has(id)
+        );
+
+        // Never delete a farm used by historical trips.
+        if (protectedFarmIds.length > 0) {
+          throw new Error(
+            `Cannot remove farm(s) ${protectedFarmIds.join(', ')} because historical trips reference them. Keep these farms in the submitted list.`
+          );
+        }
+
         await client.query(
-          `
-          INSERT INTO farms (farmer_id, location, latitude, longitude)
-          VALUES ($1,$2,$3,$4)
-          `,
-          [
-            farmerId,
-            farm.location,
-            farm.latitude,
-            farm.longitude,
-          ]
+          `DELETE FROM farms
+           WHERE farmer_id = $1
+             AND id = ANY($2::int[])`,
+          [farmerId, removedFarmIds.map(Number)]
         );
       }
     }
@@ -461,7 +554,6 @@ exports.updateFarmer = async (
     return {
       message: 'Farmer updated successfully',
     };
-
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -469,6 +561,7 @@ exports.updateFarmer = async (
     client.release();
   }
 };
+
 
 exports.updateFarmLocation = async (
   companyId,
@@ -815,23 +908,31 @@ exports.getAllCustomersOutstanding = async (companyId) => {
 /**
  * Assign trip: Trader/Manager assigns driver to farmer
  */
+
+/* ========= CREATE TRIP ========= */
+
 exports.createTrip = async (companyId, data) => {
-  let {
+  const {
     source_type = 'farmer',
     source_driver_id,
     farm_id,
+    farm_name,
     driver_id,
     lifter_id,
     broker_id,
     total_birds,
+    minimum_weight,
     approx_rate,
     trip_time,
     trip_date,
     contact_name,
     contact_phone,
+    supervisor_number,
+    on_filling_number,
+    farm_location,
+    farm_number,
   } = data;
 
-  // Convert IDs safely
   const toId = (value) => {
     if (value === undefined || value === null || value === '') {
       return null;
@@ -841,295 +942,599 @@ exports.createTrip = async (companyId, data) => {
     return Number.isInteger(id) && id > 0 ? id : NaN;
   };
 
-  farm_id = toId(farm_id);
-  driver_id = toId(driver_id);
-  source_driver_id = toId(source_driver_id);
-  lifter_id = toId(lifter_id);
-  broker_id = toId(broker_id);
+  const sourceType = String(source_type).toLowerCase();
 
-  // Farmer source MUST have a valid farm
-  if (source_type === 'farmer') {
-    if (!Number.isInteger(farm_id) || farm_id <= 0) {
-      throw new Error('Valid farm is required');
-    }
+  if (!['farmer', 'driver', 'broker'].includes(sourceType)) {
+    throw new Error('Invalid source type');
   }
 
-  // Driver source MUST have a valid source driver
-  if (source_type === 'driver') {
-    if (!Number.isInteger(source_driver_id) || source_driver_id <= 0) {
+  const driverId = toId(driver_id);
+  const lifterId = toId(lifter_id);
+  let farmId = toId(farm_id);
+  let sourceDriverId = toId(source_driver_id);
+  let brokerId = toId(broker_id);
+
+  const supervisorNumber = String(supervisor_number ?? '').trim();
+  const onFillingNumber = String(on_filling_number ?? '').trim();
+  const farmLocation = String(farm_location ?? '').trim();
+  const farmNumber = String(farm_number ?? '').trim();
+  const farmName = String(farm_name ?? '').trim();
+
+  const isBrokerStageTwo =
+    sourceType === 'broker' &&
+    supervisorNumber !== '' &&
+    Number.isInteger(driverId) &&
+    driverId > 0 &&
+    Number.isInteger(lifterId) &&
+    lifterId > 0 &&
+    onFillingNumber !== '' &&
+    farmLocation !== '' &&
+    farmNumber !== '';
+
+  if (sourceType !== 'broker' || isBrokerStageTwo) {
+    if (!Number.isInteger(driverId) || driverId <= 0) {
+      throw new Error('Valid delivery partner is required');
+    }
+  } else if (
+    driverId !== null &&
+    (!Number.isInteger(driverId) || driverId <= 0)
+  ) {
+    throw new Error('Invalid delivery partner ID');
+  }
+
+  if (
+    lifter_id !== undefined &&
+    lifter_id !== null &&
+    lifter_id !== '' &&
+    (!Number.isInteger(lifterId) || lifterId <= 0)
+  ) {
+    throw new Error('Invalid lifter ID');
+  }
+
+  if (sourceType === 'farmer') {
+    if (!Number.isInteger(farmId) || farmId <= 0) {
+      throw new Error('Valid farm is required for farmer trips');
+    }
+
+    sourceDriverId = null;
+    brokerId = null;
+  }
+
+  if (sourceType === 'driver') {
+    if (!Number.isInteger(sourceDriverId) || sourceDriverId <= 0) {
       throw new Error('Valid source driver is required');
     }
+
+    farmId = null;
+    brokerId = null;
   }
 
-  // Delivery partner MUST always be valid
-  if (!Number.isInteger(driver_id) || driver_id <= 0) {
-    throw new Error('Valid delivery partner is required');
-  }
-
-  // Validate broker belongs to this company (optional field)
-  if (broker_id !== null) {
-    if (!Number.isInteger(broker_id) || broker_id <= 0) {
-      throw new Error('Invalid broker ID');
+  if (sourceType === 'broker') {
+    if (!Number.isInteger(brokerId) || brokerId <= 0) {
+      throw new Error('Please select a broker');
     }
+
+    farmId = null;
+    sourceDriverId = null;
 
     const brokerResult = await pool.query(
-      `SELECT id FROM brokers WHERE id = $1 AND company_id = $2`,
-      [broker_id, companyId]
+      `SELECT id
+       FROM brokers
+       WHERE id = $1 AND company_id = $2`,
+      [brokerId, companyId]
     );
 
-    if (brokerResult.rows.length === 0) {
+    if (!brokerResult.rows.length) {
       throw new Error('Broker not found for this company');
+    }
+
+    if (isBrokerStageTwo) {
+      if (!Number.isInteger(driverId) || driverId <= 0) {
+        throw new Error('Valid delivery partner is required');
+      }
+
+      if (!Number.isInteger(lifterId) || lifterId <= 0) {
+        throw new Error('Valid lifter is required for broker Stage 2');
+      }
+
+      if (!onFillingNumber) {
+        throw new Error('On-filling number is required');
+      }
+
+      if (!farmLocation) {
+        throw new Error('Farm location is required');
+      }
+
+      if (!farmNumber) {
+        throw new Error('Farm number is required');
+      }
+
+      if (!farmName) {
+        throw new Error('Farm name is required');
+      }
     }
   }
 
-  // Validate contact phone
+  if (
+    total_birds === undefined ||
+    total_birds === null ||
+    total_birds === '' ||
+    !Number.isInteger(Number(total_birds)) ||
+    Number(total_birds) <= 0
+  ) {
+    throw new Error('Total birds must be a positive whole number');
+  }
+
+  if (!trip_date || !trip_time) {
+    throw new Error('Trip date and time are required');
+  }
+
   if (contact_phone && !/^\d{10}$/.test(String(contact_phone))) {
     throw new Error('Contact phone must be 10 digits');
   }
 
+  const numericWeight =
+    minimum_weight === undefined ||
+    minimum_weight === null ||
+    minimum_weight === ''
+      ? null
+      : Number(minimum_weight);
+
+  if (
+    numericWeight !== null &&
+    (!Number.isFinite(numericWeight) || numericWeight < 0)
+  ) {
+    throw new Error(
+      'Minimum weight must be a valid non-negative number'
+    );
+  }
+
+  const numericRate =
+    approx_rate === undefined ||
+    approx_rate === null ||
+    approx_rate === ''
+      ? null
+      : Number(approx_rate);
+
+  if (
+    numericRate !== null &&
+    (!Number.isFinite(numericRate) || numericRate < 0)
+  ) {
+    throw new Error(
+      'Approximate rate must be a valid non-negative number'
+    );
+  }
+
   const result = await pool.query(
-    `
-      INSERT INTO trips (
-        company_id,
-        source_type,
-        source_driver_id,
-        farm_id,
-        driver_id,
-        lifter_id,
-        broker_id,
-        total_birds,
-        approx_rate,
-        trip_time,
-        trip_date,
-        contact_name,
-        contact_phone
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-      )
-      RETURNING *
-    `,
-    [
-      companyId,
+    `INSERT INTO trips (
+      company_id,
       source_type,
       source_driver_id,
       farm_id,
+      farm_name,
       driver_id,
       lifter_id,
       broker_id,
-      total_birds || 0,
-      approx_rate ? Number(approx_rate) : null,
+      total_birds,
+      minimum_weight,
+      approx_rate,
+      trip_time,
+      trip_date,
+      contact_name,
+      contact_phone,
+      supervisor_number,
+      on_filling_number,
+      farm_location,
+      farm_number
+    )
+    VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16, $17, $18, $19
+    )
+    RETURNING *`,
+    [
+      companyId,
+      sourceType,
+      sourceDriverId,
+      farmId,
+      sourceType === 'broker' ? farmName || null : null,
+      driverId,
+      lifterId,
+      brokerId,
+      Number(total_birds),
+      numericWeight,
+      numericRate,
       trip_time,
       trip_date,
       contact_name || null,
       contact_phone || null,
+      supervisorNumber || null,
+      onFillingNumber || null,
+      farmLocation || null,
+      farmNumber || null,
     ]
   );
 
   return result.rows[0];
 };
 
+
+/* ========= GET TRIPS ========= */
+
 exports.getTrips = async (companyId) => {
-  const res = await pool.query(
-    `
-      SELECT
-        t.id,
-        t.company_id,
+  const result = await pool.query(
+    `SELECT
+      t.id,
+      t.company_id,
+      t.source_type,
+      t.source_driver_id,
+      sourceDriver.name AS source_driver_name,
+      sourceDriver.mobile AS source_driver_mobile,
 
-        -- Source
-        t.source_type,
-        t.source_driver_id,
-        sourceDriver.name AS source_driver_name,
-        sourceDriver.mobile AS source_driver_mobile,
+      t.farm_id,
+      t.farm_name,
+      COALESCE(t.farm_location, fa.location) AS farm_location,
+      fa.latitude AS farm_latitude,
+      fa.longitude AS farm_longitude,
 
-        -- Farm
-        t.farm_id,
-        fa.location AS farm_location,
-        fa.latitude AS farm_latitude,
-        fa.longitude AS farm_longitude,
+      f.id AS farmer_id,
+      f.name AS farmer_name,
+      f.mobile AS farmer_mobile,
 
-        -- Farmer
-        f.id AS farmer_id,
-        f.name AS farmer_name,
-        f.mobile AS farmer_mobile,
+      t.driver_id,
+      u.name AS driver_name,
+      u.mobile AS driver_mobile,
 
-        -- Driver
-        t.driver_id,
-        u.name AS driver_name,
-        u.mobile AS driver_mobile,
+      t.lifter_id,
+      lifter.name AS lifter_name,
+      lifter.mobile AS lifter_mobile,
 
-        -- Lifter
-        t.lifter_id,
-        lifter.name AS lifter_name,
-        lifter.mobile AS lifter_mobile,
+      t.broker_id,
+      b.name AS broker_name,
+      b.number AS broker_number,
 
-        -- Broker
-        t.broker_id,
-        b.name AS broker_name,
-        b.number AS broker_number,
+      t.minimum_weight,
+      t.supervisor_number,
+      t.on_filling_number,
+      t.farm_number,
 
-        -- Trip
-        t.total_birds,
-        t.total_weight,
-        t.approx_rate,
-        t.trip_date,
-        t.trip_time,
+      t.total_birds,
+      t.total_weight,
+      t.approx_rate,
+      t.trip_date,
+      t.trip_time,
 
-        -- Contact
-        t.contact_name,
-        t.contact_phone,
+      t.contact_name,
+      t.contact_phone,
 
-        -- Status
-        t.status,
-        t.is_verified,
-        t.created_at,
-        t.closed_at
+      t.status,
+      t.is_verified,
+      t.created_at,
+      t.closed_at
 
-      FROM trips t
+    FROM trips t
 
-      LEFT JOIN farms fa
-        ON fa.id = t.farm_id
+    LEFT JOIN farms fa
+      ON fa.id = t.farm_id
 
-      LEFT JOIN farmers f
-        ON f.id = fa.farmer_id
-       AND f.company_id = t.company_id
+    LEFT JOIN farmers f
+      ON f.id = fa.farmer_id
+     AND f.company_id = t.company_id
 
-      LEFT JOIN users u
-        ON u.id = t.driver_id
-       AND u.company_id = t.company_id
+    LEFT JOIN users u
+      ON u.id = t.driver_id
+     AND u.company_id = t.company_id
 
-      LEFT JOIN users lifter
-        ON lifter.id = t.lifter_id
-       AND lifter.company_id = t.company_id
+    LEFT JOIN users lifter
+      ON lifter.id = t.lifter_id
+     AND lifter.company_id = t.company_id
 
-      LEFT JOIN users sourceDriver
-        ON sourceDriver.id = t.source_driver_id
-       AND sourceDriver.company_id = t.company_id
+    LEFT JOIN users sourceDriver
+      ON sourceDriver.id = t.source_driver_id
+     AND sourceDriver.company_id = t.company_id
 
-      LEFT JOIN brokers b
-        ON b.id = t.broker_id
-       AND b.company_id = t.company_id
+    LEFT JOIN brokers b
+      ON b.id = t.broker_id
+     AND b.company_id = t.company_id
 
-      WHERE t.company_id = $1
+    WHERE t.company_id = $1
 
-      ORDER BY t.trip_date DESC, t.trip_time DESC
-    `,
+    ORDER BY t.trip_date DESC, t.trip_time DESC`,
     [companyId]
   );
 
-  return res.rows;
+  return result.rows;
 };
-exports.updateTrip = async (companyId, tripId, data) => {
-  const {
-    source_type,
-    source_driver_id,
-    farm_id,
-    driver_id,
-    lifter_id,
-    broker_id,
-    total_birds,
-    trip_date,
-    approx_rate,
-    trip_time,
-    contact_name,
-    contact_phone,
-  } = data;
 
-  // Validate contact phone
-  if (
-    contact_phone !== undefined &&
-    contact_phone !== null &&
-    contact_phone !== '' &&
-    !/^\d{10}$/.test(String(contact_phone))
-  ) {
-    throw new Error('Contact phone must be 10 digits');
+
+/* ========= UPDATE TRIP ========= */
+
+exports.updateTrip = async (companyId, tripId, data) => {
+  const has = (key) =>
+    Object.prototype.hasOwnProperty.call(data, key);
+
+  const existingResult = await pool.query(
+    `SELECT *
+     FROM trips
+     WHERE id = $1 AND company_id = $2`,
+    [tripId, companyId]
+  );
+
+  if (!existingResult.rows.length) {
+    throw new Error('Trip not found');
   }
 
-  // Normalize broker ID while preserving null to remove a broker
-  let normalizedBrokerId = null;
+  const existing = existingResult.rows[0];
 
-  if (broker_id !== undefined && broker_id !== null && broker_id !== '') {
-    normalizedBrokerId = Number(broker_id);
+  if (existing.status === 'CLOSED') {
+    throw new Error('Cannot update a closed trip');
+  }
 
-    if (!Number.isInteger(normalizedBrokerId) || normalizedBrokerId <= 0) {
-      throw new Error('Invalid broker ID');
+  const toId = (value) => {
+    if (value === undefined || value === null || value === '') {
+      return null;
     }
 
-    // Ensure the broker belongs to this company
+    const id = Number(value);
+    return Number.isInteger(id) && id > 0 ? id : NaN;
+  };
+
+  const sourceType = String(
+    has('source_type') ? data.source_type : existing.source_type
+  ).toLowerCase();
+
+  if (!['farmer', 'driver', 'broker'].includes(sourceType)) {
+    throw new Error('Invalid source type');
+  }
+
+  const sourceChanged = sourceType !== existing.source_type;
+
+  let farmId = sourceChanged
+    ? toId(sourceType === 'farmer' ? data.farm_id : null)
+    : has('farm_id')
+      ? toId(data.farm_id)
+      : toId(existing.farm_id);
+
+  let sourceDriverId = sourceChanged
+    ? toId(sourceType === 'driver' ? data.source_driver_id : null)
+    : has('source_driver_id')
+      ? toId(data.source_driver_id)
+      : toId(existing.source_driver_id);
+
+  let brokerId = sourceChanged
+    ? toId(sourceType === 'broker' ? data.broker_id : null)
+    : has('broker_id')
+      ? toId(data.broker_id)
+      : toId(existing.broker_id);
+
+  if (sourceType !== 'farmer') farmId = null;
+  if (sourceType !== 'driver') sourceDriverId = null;
+  if (sourceType !== 'broker') brokerId = null;
+
+  if (
+    sourceType === 'farmer' &&
+    (!Number.isInteger(farmId) || farmId <= 0)
+  ) {
+    throw new Error('Valid farm is required for farmer trips');
+  }
+
+  if (
+    sourceType === 'driver' &&
+    (!Number.isInteger(sourceDriverId) || sourceDriverId <= 0)
+  ) {
+    throw new Error('Valid source driver is required');
+  }
+
+  if (
+    sourceType === 'broker' &&
+    (!Number.isInteger(brokerId) || brokerId <= 0)
+  ) {
+    throw new Error('Please select a broker');
+  }
+
+  if (sourceType === 'broker') {
     const brokerResult = await pool.query(
-      `
-        SELECT id
-        FROM brokers
-        WHERE id = $1
-          AND company_id = $2
-      `,
-      [normalizedBrokerId, companyId]
+      `SELECT id
+       FROM brokers
+       WHERE id = $1 AND company_id = $2`,
+      [brokerId, companyId]
     );
 
-    if (brokerResult.rows.length === 0) {
+    if (!brokerResult.rows.length) {
       throw new Error('Broker not found for this company');
     }
   }
 
-  const res = await pool.query(
-    `
-      UPDATE trips
-      SET
-        source_type = COALESCE($1, source_type),
-        source_driver_id = COALESCE($2, source_driver_id),
-        farm_id = COALESCE($3, farm_id),
-        driver_id = COALESCE($4, driver_id),
-        lifter_id = COALESCE($5, lifter_id),
-        total_birds = COALESCE($6, total_birds),
-        approx_rate = COALESCE($7, approx_rate),
-        trip_date = COALESCE($8, trip_date),
-        trip_time = COALESCE($9, trip_time),
-        contact_name = COALESCE($10, contact_name),
-        contact_phone = COALESCE($11, contact_phone),
+  const driverId = has('driver_id')
+    ? toId(data.driver_id)
+    : toId(existing.driver_id);
 
-        broker_id = CASE
-          WHEN $12::boolean THEN $13::integer
-          ELSE broker_id
-        END
+  const lifterId = has('lifter_id')
+    ? toId(data.lifter_id)
+    : toId(existing.lifter_id);
 
-      WHERE id = $14
-        AND company_id = $15
-        AND status != 'CLOSED'
+  if (
+    has('lifter_id') &&
+    data.lifter_id !== null &&
+    data.lifter_id !== '' &&
+    (!Number.isInteger(lifterId) || lifterId <= 0)
+  ) {
+    throw new Error('Invalid lifter ID');
+  }
 
-      RETURNING *
-    `,
+  const valueOrExisting = (key, existingValue) =>
+    has(key) ? data[key] : existingValue;
+
+  const supervisorNumber = String(
+    valueOrExisting('supervisor_number', existing.supervisor_number) ?? ''
+  ).trim();
+
+  const onFillingNumber = String(
+    valueOrExisting('on_filling_number', existing.on_filling_number) ?? ''
+  ).trim();
+
+  const farmLocation = String(
+    valueOrExisting('farm_location', existing.farm_location) ?? ''
+  ).trim();
+
+  const farmNumber = String(
+    valueOrExisting('farm_number', existing.farm_number) ?? ''
+  ).trim();
+
+  const farmName = String(
+    valueOrExisting('farm_name', existing.farm_name) ?? ''
+  ).trim();
+
+  const isBrokerStageTwo =
+    sourceType === 'broker' && supervisorNumber !== '';
+
+  if (sourceType !== 'broker' || isBrokerStageTwo) {
+    if (!Number.isInteger(driverId) || driverId <= 0) {
+      throw new Error('Valid delivery partner is required');
+    }
+  } else if (
+    driverId !== null &&
+    (!Number.isInteger(driverId) || driverId <= 0)
+  ) {
+    throw new Error('Invalid delivery partner ID');
+  }
+
+  if (isBrokerStageTwo) {
+    if (!Number.isInteger(lifterId) || lifterId <= 0) {
+      throw new Error('Valid lifter is required for broker Stage 2');
+    }
+
+    if (!onFillingNumber) {
+      throw new Error('On-filling number is required');
+    }
+
+    if (!farmName) {
+      throw new Error('Farm name is required');
+    }
+
+    if (!farmLocation) {
+      throw new Error('Farm location is required');
+    }
+
+    if (!farmNumber) {
+      throw new Error('Farm number is required');
+    }
+  }
+
+  const totalBirds = has('total_birds')
+    ? Number(data.total_birds)
+    : Number(existing.total_birds);
+
+  if (!Number.isInteger(totalBirds) || totalBirds <= 0) {
+    throw new Error('Total birds must be a positive whole number');
+  }
+
+  const minimumWeight = has('minimum_weight')
+    ? data.minimum_weight === '' ||
+      data.minimum_weight === null ||
+      data.minimum_weight === undefined
+      ? null
+      : Number(data.minimum_weight)
+    : existing.minimum_weight;
+
+  if (
+    minimumWeight !== null &&
+    (!Number.isFinite(Number(minimumWeight)) || Number(minimumWeight) < 0)
+  ) {
+    throw new Error('Minimum weight must be a valid non-negative number');
+  }
+
+  const approxRate = has('approx_rate')
+    ? data.approx_rate === '' ||
+      data.approx_rate === null ||
+      data.approx_rate === undefined
+      ? null
+      : Number(data.approx_rate)
+    : existing.approx_rate;
+
+  if (
+    approxRate !== null &&
+    (!Number.isFinite(Number(approxRate)) || Number(approxRate) < 0)
+  ) {
+    throw new Error('Approximate rate must be a valid non-negative number');
+  }
+
+  const contactPhone = valueOrExisting(
+    'contact_phone',
+    existing.contact_phone
+  );
+
+  if (contactPhone && !/^\d{10}$/.test(String(contactPhone))) {
+    throw new Error('Contact phone must be 10 digits');
+  }
+
+  const tripDate = valueOrExisting('trip_date', existing.trip_date);
+  const tripTime = valueOrExisting('trip_time', existing.trip_time);
+
+  if (!tripDate || !tripTime) {
+    throw new Error('Trip date and time are required');
+  }
+
+  const result = await pool.query(
+    `UPDATE trips
+     SET
+       source_type = $1,
+       source_driver_id = $2,
+       farm_id = $3,
+       farm_name = $4,
+       driver_id = $5,
+       lifter_id = $6,
+       broker_id = $7,
+       total_birds = $8,
+       minimum_weight = $9,
+       approx_rate = $10,
+       trip_date = $11,
+       trip_time = $12,
+       contact_name = $13,
+       contact_phone = $14,
+       supervisor_number = $15,
+       on_filling_number = $16,
+       farm_location = $17,
+       farm_number = $18
+     WHERE id = $19
+       AND company_id = $20
+       AND status <> 'CLOSED'
+     RETURNING *`,
     [
-      source_type ?? null,             // $1
-      source_driver_id ?? null,        // $2
-      farm_id ?? null,                 // $3
-      driver_id ?? null,               // $4
-      lifter_id ?? null,               // $5
-      total_birds ?? null,             // $6
-      approx_rate !== undefined &&
-      approx_rate !== null &&
-      approx_rate !== ''
-        ? Number(approx_rate)
-        : null,                        // $7
-      trip_date ?? null,               // $8
-      trip_time ?? null,               // $9
-      contact_name ?? null,            // $10
-      contact_phone ?? null,           // $11
-      broker_id !== undefined,         // $12
-      normalizedBrokerId,              // $13
-      tripId,                          // $14
-      companyId,                       // $15
+      sourceType,
+      sourceDriverId,
+      farmId,
+      sourceType === 'broker' ? farmName || null : null,
+      driverId,
+      lifterId,
+      brokerId,
+      totalBirds,
+      minimumWeight,
+      approxRate,
+      tripDate,
+      tripTime,
+      valueOrExisting('contact_name', existing.contact_name) || null,
+      contactPhone || null,
+      supervisorNumber || null,
+      onFillingNumber || null,
+      farmLocation || null,
+      farmNumber || null,
+      tripId,
+      companyId,
     ]
   );
 
-  if (!res.rows.length) {
+  if (!result.rows.length) {
     throw new Error('Trip not found or already closed');
   }
 
   return {
     message: 'Trip updated successfully',
-    trip: res.rows[0],
+    trip: result.rows[0],
   };
 };
+
+
 
 exports.deleteTrip = async (companyId, tripId) => {
   const res = await pool.query(
@@ -2020,28 +2425,111 @@ exports.createBroker = async (companyId, { name, number }) => {
   }
 
   if (!brokerNumber) {
-    throw new Error('Broker number is required');
+    throw new Error('Broker mobile number is required');
   }
 
-  const result = await pool.query(
-    `
-      INSERT INTO brokers (
-        company_id,
-        name,
-        number
-      )
-      VALUES ($1, $2, $3)
-      RETURNING *
-    `,
-    [companyId, brokerName, brokerNumber]
-  );
+  // Validate 10-digit Indian mobile number
+  if (!/^[6-9]\d{9}$/.test(brokerNumber)) {
+    throw new Error('Enter a valid 10-digit mobile number');
+  }
 
-  return {
-    message: 'Broker created successfully',
-    broker: result.rows[0],
-  };
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Check whether this mobile number already has a login account
+    const existingUser = await client.query(
+      'SELECT id FROM users WHERE mobile = $1',
+      [brokerNumber]
+    );
+
+    if (existingUser.rows.length > 0) {
+      throw new Error('Mobile number already exists');
+    }
+
+    // Check duplicate broker number within this company
+    const existingBroker = await client.query(
+      `SELECT id
+       FROM brokers
+       WHERE company_id = $1 AND number = $2`,
+      [companyId, brokerNumber]
+    );
+
+    if (existingBroker.rows.length > 0) {
+      throw new Error('Broker with this mobile number already exists');
+    }
+
+    // Create login account using the same default password as Drivers
+    const hash = await bcrypt.hash('1234', 10);
+
+    const userResult = await client.query(
+      `INSERT INTO users (
+         company_id,
+         name,
+         mobile,
+         password,
+         role,
+         must_change_password
+       )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, mobile, role, must_change_password`,
+      [
+        companyId,
+        brokerName,
+        brokerNumber,
+        hash,
+        'BROKER',
+        true,
+      ]
+    );
+
+    const user = userResult.rows[0];
+
+    // Create broker profile linked to the login account
+    const brokerResult = await client.query(
+      `INSERT INTO brokers (
+         company_id,
+         user_id,
+         name,
+         number
+       )
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [
+        companyId,
+        user.id,
+        brokerName,
+        brokerNumber,
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      message: 'Broker and login account created successfully',
+      broker: brokerResult.rows[0],
+      user: {
+        id: user.id,
+        name: user.name,
+        mobile: user.mobile,
+        role: user.role,
+        must_change_password: user.must_change_password,
+      },
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+
+    // Convert concurrent duplicate-mobile violations to a useful message
+    if (error.code === '23505') {
+      throw new Error('Mobile number already exists');
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
 };
-
 
 exports.getBrokers = async (companyId) => {
   const result = await pool.query(
@@ -2133,4 +2621,283 @@ exports.deleteBroker = async (companyId, brokerId) => {
   return {
     message: 'Broker deleted successfully',
   };
+};
+
+
+/* ========= GET BROKER TRIPS ========= */
+
+exports.getBrokerTrips = async (companyId, userId) => {
+  const result = await pool.query(
+    `SELECT
+      t.id,
+      t.trip_date,
+      t.trip_time,
+      t.source_type,
+      t.broker_id,
+
+      b.name AS broker_name,
+      b.number AS broker_number,
+
+      trader.name AS trader_name,
+      traderCompany.company_name AS trader_company_name,
+
+      t.farm_name,
+      t.total_birds,
+      t.minimum_weight,
+      t.approx_rate,
+      t.supervisor_number,
+      t.contact_name,
+      t.contact_phone,
+      t.farm_location,
+      t.farm_number,
+      t.on_filling_number,
+      t.status,
+      t.created_at
+
+    FROM trips t
+
+    INNER JOIN brokers b
+      ON b.id = t.broker_id
+     AND b.company_id = t.company_id
+
+    LEFT JOIN users trader
+      ON trader.company_id = t.company_id
+     AND trader.role::text = 'TRADER'
+
+    LEFT JOIN companies traderCompany
+      ON traderCompany.id = t.company_id
+
+    WHERE t.company_id = $1
+      AND b.user_id = $2
+      AND t.source_type = 'broker'
+
+    ORDER BY t.trip_date DESC, t.trip_time DESC`,
+    [companyId, userId]
+  );
+
+  return result.rows;
+};
+
+
+/* ========= UPDATE BROKER TRIP ========= */
+
+/* ========= UPDATE BROKER TRIP ========= */
+
+exports.updateBrokerTrip = async (companyId, userId, tripId, data) => {
+  const fieldMap = {
+    supervisor_number: 'supervisor_number',
+    farm_name: 'farm_name',
+    farm_location: 'farm_location',
+    farm_number: 'farm_number',
+    contact_name: 'contact_name',
+    contact_phone: 'contact_phone',
+  };
+
+  const submittedFields = Object.keys(data || {});
+
+  if (submittedFields.length === 0) {
+    throw new Error('Nothing to update');
+  }
+
+  const invalidFields = submittedFields.filter(
+    (field) => !Object.prototype.hasOwnProperty.call(fieldMap, field)
+  );
+
+  if (invalidFields.length > 0) {
+    throw new Error(
+      `You cannot update these fields: ${invalidFields.join(', ')}`
+    );
+  }
+
+  const brokerResult = await pool.query(
+    `SELECT t.id, t.status
+     FROM trips t
+     INNER JOIN brokers b
+       ON b.id = t.broker_id
+      AND b.company_id = t.company_id
+     WHERE t.id = $1
+       AND t.company_id = $2
+       AND b.user_id = $3
+       AND t.source_type = 'broker'
+     FOR UPDATE OF t`,
+    [tripId, companyId, userId]
+  );
+
+  if (!brokerResult.rows.length) {
+    throw new Error('Trip not found or not assigned to you');
+  }
+
+  if (brokerResult.rows[0].status === 'CLOSED') {
+    throw new Error('Cannot update a closed trip');
+  }
+
+  const updates = new Map();
+
+  for (const field of submittedFields) {
+    const rawValue = data[field];
+
+    const value =
+      rawValue === null || rawValue === undefined
+        ? null
+        : String(rawValue).trim();
+
+    const column = fieldMap[field];
+
+    if (updates.has(column)) {
+      throw new Error(
+        `Please submit only one field for ${column.replaceAll('_', ' ')}`
+      );
+    }
+
+    // Required broker fields
+    if (
+      ['farm_name', 'farm_location', 'farm_number'].includes(column) &&
+      !value
+    ) {
+      throw new Error(`${column.replaceAll('_', ' ')} is required`);
+    }
+
+    // Supervisor number is optional during partial trip updates.
+    if (
+      column === 'contact_phone' &&
+      value &&
+      !/^\d{10}$/.test(value)
+    ) {
+      throw new Error('Contact phone must be 10 digits');
+    }
+
+    updates.set(column, value);
+  }
+
+  const values = [];
+  const assignments = [];
+
+  for (const [column, value] of updates.entries()) {
+    values.push(value);
+    assignments.push(`${column} = $${values.length}`);
+  }
+
+  values.push(tripId);
+  const tripIdParam = values.length;
+
+  values.push(companyId);
+  const companyIdParam = values.length;
+
+  values.push(userId);
+  const userIdParam = values.length;
+
+  const result = await pool.query(
+    `UPDATE trips t
+     SET ${assignments.join(', ')}
+     FROM brokers b
+     WHERE t.id = $${tripIdParam}
+       AND t.company_id = $${companyIdParam}
+       AND t.broker_id = b.id
+       AND b.company_id = t.company_id
+       AND b.user_id = $${userIdParam}
+       AND t.source_type = 'broker'
+       AND t.status <> 'CLOSED'
+     RETURNING t.*`,
+    values
+  );
+
+  if (!result.rows.length) {
+    throw new Error(
+      'Trip not found, not assigned to you, or already closed'
+    );
+  }
+
+  return {
+    message: 'Broker trip updated successfully',
+    trip: result.rows[0],
+  };
+};
+
+
+exports.getTripDC = async (user, tripId) => {
+  const companyId = user?.company_id ?? user?.companyId;
+
+  if (!user || !companyId) {
+    const error = new Error('User or company information is missing');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const tripRes = await pool.query(
+    `SELECT id, company_id, status
+     FROM trips
+     WHERE id = $1
+       AND company_id = $2`,
+    [tripId, companyId]
+  );
+
+  if (!tripRes.rows.length) {
+    const error = new Error('Trip not found or not authorized');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trip = tripRes.rows[0];
+
+  if (trip.status !== 'CLOSED') {
+    const error = new Error(
+      'Delivery Challan is available only for closed trips'
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const result = await pool.query(
+  `
+  WITH remaining_stock AS (
+    SELECT
+      tc.id AS trip_cage_id,
+      tc.cage_number,
+      COALESCE(SUM(tce.bird_count), 0) AS remaining_birds,
+      COALESCE(SUM(tce.weight), 0) AS remaining_weight
+    FROM trip_cages tc
+    LEFT JOIN trip_cage_entries tce
+      ON tce.trip_cage_id = tc.id
+    WHERE tc.trip_id = $1
+    GROUP BY tc.id, tc.cage_number
+  ),
+  sold_stock AS (
+    SELECT
+      s.cage_number,
+      COALESCE(SUM(s.bird_count), 0) AS sold_birds,
+      COALESCE(SUM(s.weight), 0) AS sold_weight
+    FROM sales s
+    WHERE s.trip_id = $1
+      AND UPPER(COALESCE(s.sell_type, '')) <> 'PAYMENT'
+    GROUP BY s.cage_number
+  )
+  SELECT
+    r.cage_number,
+    (
+      r.remaining_birds + COALESCE(s.sold_birds, 0)
+    )::int AS total_birds,
+    (
+      r.remaining_weight + COALESCE(s.sold_weight, 0)
+    )::numeric AS total_weight
+  FROM remaining_stock r
+  LEFT JOIN sold_stock s
+    ON s.cage_number::text = r.cage_number::text
+  ORDER BY r.cage_number ASC
+  `,
+  [tripId]
+);
+
+const cages = result.rows.map((row) => ({
+  cage_number: row.cage_number,
+  total_birds: Number(row.total_birds || 0),
+  total_weight: Number(row.total_weight || 0),
+}));
+
+return {
+  trip_id: Number(tripId),
+  total_cages: cages.length,
+  total_birds: cages.reduce((sum, cage) => sum + cage.total_birds, 0),
+  total_weight: cages.reduce((sum, cage) => sum + cage.total_weight, 0),
+  cages,
+};
 };
