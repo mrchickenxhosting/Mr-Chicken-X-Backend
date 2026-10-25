@@ -508,6 +508,7 @@ exports.getTripCages = async (user, tripId) => {
 // };
 
 
+
 exports.sellToCustomer = async (user, tripId, data) => {
   const client = await pool.connect();
   let transactionStarted = false;
@@ -542,6 +543,8 @@ exports.sellToCustomer = async (user, tripId, data) => {
     const isCustomerSale = targetType === 'CUSTOMER';
     const isDriverTransfer = targetType === 'DRIVER';
 
+    const money = (value) => Number(Number(value).toFixed(2));
+
     const cash = Number(cash_amount);
     const upi = Number(upi_amount);
     const requestedBirds = Number(bird_count || 0);
@@ -563,7 +566,9 @@ exports.sellToCustomer = async (user, tripId, data) => {
       cash < 0 ||
       upi < 0
     ) {
-      throw new Error('Cash and UPI amounts must be valid non-negative numbers');
+      throw new Error(
+        'Cash and UPI amounts must be valid non-negative numbers'
+      );
     }
 
     if (
@@ -576,7 +581,9 @@ exports.sellToCustomer = async (user, tripId, data) => {
       saleRate < 0 ||
       suppliedTotal < 0
     ) {
-      throw new Error('Invalid sale amount, bird count, weight, or rate');
+      throw new Error(
+        'Invalid sale amount, bird count, weight, or rate'
+      );
     }
 
     if (isCustomerSale && !customer_id) {
@@ -618,12 +625,13 @@ exports.sellToCustomer = async (user, tripId, data) => {
         throw new Error('Rate must be greater than zero');
       }
 
-      if (saleType === 'CUSTOM') {
-        if (requestedBirds <= 0 || requestedWeight <= 0) {
-          throw new Error(
-            'Custom sale requires a positive bird count and weight'
-          );
-        }
+      if (
+        saleType === 'CUSTOM' &&
+        (requestedBirds <= 0 || requestedWeight <= 0)
+      ) {
+        throw new Error(
+          'Custom sale requires a positive bird count and weight'
+        );
       }
     }
 
@@ -633,12 +641,12 @@ exports.sellToCustomer = async (user, tripId, data) => {
 
     const tripRes = await client.query(
       `
-      SELECT *
-      FROM trips
-      WHERE id = $1
-        AND driver_id = $2
-        AND status = 'LIFTED'
-      FOR UPDATE
+        SELECT *
+        FROM trips
+        WHERE id = $1
+          AND driver_id = $2
+          AND status = 'LIFTED'
+        FOR UPDATE
       `,
       [tripId, user.userId]
     );
@@ -651,6 +659,13 @@ exports.sellToCustomer = async (user, tripId, data) => {
 
     // =========================================================
     // 3. LOCK CUSTOMER AND READ CREDIT SETTINGS
+    //
+    // outstanding:
+    //   Positive = customer has pending dues.
+    //   Zero     = customer balance is settled.
+    //   Negative = customer has advance credit.
+    //
+    // No additional database column is required.
     // =========================================================
 
     let customer = null;
@@ -662,17 +677,17 @@ exports.sellToCustomer = async (user, tripId, data) => {
     if (isCustomerSale) {
       const customerRes = await client.query(
         `
-        SELECT
-          id,
-          company_id,
-          name,
-          customer_type,
-          credit_limit,
-          outstanding
-        FROM customers
-        WHERE id = $1
-          AND company_id = $2
-        FOR UPDATE
+          SELECT
+            id,
+            company_id,
+            name,
+            customer_type,
+            credit_limit,
+            outstanding
+          FROM customers
+          WHERE id = $1
+            AND company_id = $2
+          FOR UPDATE
         `,
         [customer_id, trip.company_id]
       );
@@ -694,9 +709,9 @@ exports.sellToCustomer = async (user, tripId, data) => {
       customerOutstanding = Number(customer.outstanding || 0);
       customerCreditLimit = Number(customer.credit_limit || 0);
 
+      // Negative outstanding is valid and represents advance credit.
       if (
         !Number.isFinite(customerOutstanding) ||
-        customerOutstanding < 0 ||
         !Number.isFinite(customerCreditLimit) ||
         customerCreditLimit < 0
       ) {
@@ -706,44 +721,50 @@ exports.sellToCustomer = async (user, tripId, data) => {
 
     // =========================================================
     // 4. PAYMENT-ONLY FLOW
+    //
+    // Accept payments greater than outstanding.
+    // Any excess reduces outstanding below zero.
     // =========================================================
 
     if (isPaymentOnly) {
       if (!isCustomerSale) {
-        throw new Error('Payment-only entries are supported for customers only');
+        throw new Error(
+          'Payment-only entries are supported for customers only'
+        );
       }
 
-      const paymentAmount = Number((cash + upi).toFixed(2));
+      const paymentAmount = money(cash + upi);
 
       if (paymentAmount <= 0) {
         throw new Error('Payment amount must be greater than zero');
       }
 
-      if (paymentAmount > customerOutstanding) {
-        throw new Error(
-          `Payment exceeds the outstanding balance of ${customerOutstanding.toFixed(2)}`
-        );
-      }
+      const updatedOutstanding = money(
+        customerOutstanding - paymentAmount
+      );
 
+      // Record the entire payment, including any excess.
       await client.query(
         `
-        INSERT INTO sales (
-          trip_id,
-          customer_id,
-          target_driver_id,
-          sale_target_type,
-          cage_number,
-          sell_type,
-          bird_count,
-          weight,
-          rate,
-          total_amount,
-          payment_mode,
-          cash_amount,
-          upi_amount
-        )
-        VALUES ($1, $2, NULL, 'CUSTOMER', 0, 'PAYMENT',
-                0, 0, 0, $3, $4, $5, $6)
+          INSERT INTO sales (
+            trip_id,
+            customer_id,
+            target_driver_id,
+            sale_target_type,
+            cage_number,
+            sell_type,
+            bird_count,
+            weight,
+            rate,
+            total_amount,
+            payment_mode,
+            cash_amount,
+            upi_amount
+          )
+          VALUES (
+            $1, $2, NULL, 'CUSTOMER', 0, 'PAYMENT',
+            0, 0, 0, $3, $4, $5, $6
+          )
         `,
         [
           tripId,
@@ -755,18 +776,18 @@ exports.sellToCustomer = async (user, tripId, data) => {
         ]
       );
 
-      const updatedOutstanding = Number(
-        Math.max(0, customerOutstanding - paymentAmount).toFixed(2)
-      );
-
       await client.query(
         `
-        UPDATE customers
-        SET outstanding = $1
-        WHERE id = $2
-          AND company_id = $3
+          UPDATE customers
+          SET outstanding = $1
+          WHERE id = $2
+            AND company_id = $3
         `,
-        [updatedOutstanding, customer_id, trip.company_id]
+        [
+          updatedOutstanding,
+          customer_id,
+          trip.company_id,
+        ]
       );
 
       await client.query('COMMIT');
@@ -776,11 +797,12 @@ exports.sellToCustomer = async (user, tripId, data) => {
         message: 'Payment recorded successfully',
         payment_amount: paymentAmount,
         outstanding: updatedOutstanding,
+        advance_credit: money(Math.max(0, -updatedOutstanding)),
       };
     }
 
     // =========================================================
-    // 5. FETCH SELECTED CAGES AND LOCK INVENTORY ROWS
+    // 5. FETCH SELECTED CAGES AND LOCK INVENTORY
     // =========================================================
 
     const cageData = [];
@@ -788,19 +810,19 @@ exports.sellToCustomer = async (user, tripId, data) => {
     for (const cageNumber of selectedCages) {
       const cageRes = await client.query(
         `
-        SELECT
-          c.id AS trip_cage_id,
-          c.cage_number,
-          e.id AS entry_id,
-          e.bird_count,
-          e.weight
-        FROM trip_cages c
-        JOIN trip_cage_entries e
-          ON e.trip_cage_id = c.id
-        WHERE c.trip_id = $1
-          AND c.cage_number = $2
-        ORDER BY e.id
-        FOR UPDATE OF c, e
+          SELECT
+            c.id AS trip_cage_id,
+            c.cage_number,
+            e.id AS entry_id,
+            e.bird_count,
+            e.weight
+          FROM trip_cages c
+          JOIN trip_cage_entries e
+            ON e.trip_cage_id = c.id
+          WHERE c.trip_id = $1
+            AND c.cage_number = $2
+          ORDER BY e.id
+          FOR UPDATE OF c, e
         `,
         [tripId, cageNumber]
       );
@@ -838,12 +860,20 @@ exports.sellToCustomer = async (user, tripId, data) => {
       throw new Error('Invalid cage inventory detected');
     }
 
-    if (saleType === 'CUSTOM' && requestedBirds > totalAvailableBirds) {
+    if (
+      saleType === 'CUSTOM' &&
+      requestedBirds > totalAvailableBirds
+    ) {
       throw new Error('Not enough birds available');
     }
 
-    if (saleType === 'CUSTOM' && requestedWeight > totalAvailableWeight) {
-      throw new Error('Not enough weight available in the selected cages');
+    if (
+      saleType === 'CUSTOM' &&
+      requestedWeight > totalAvailableWeight
+    ) {
+      throw new Error(
+        'Not enough weight available in the selected cages'
+      );
     }
 
     const avgWeightPerBird =
@@ -874,13 +904,11 @@ exports.sellToCustomer = async (user, tripId, data) => {
 
         if (birdsToSell <= 0) continue;
 
-        // Keep the final selected portion aligned with the requested
-        // weight despite rounding on earlier cage allocations.
         if (birdsToSell === birdsRemaining) {
-          weightToSell = Number(weightRemaining.toFixed(2));
+          weightToSell = money(weightRemaining);
         } else {
-          weightToSell = Number(
-            (birdsToSell * avgWeightPerBird).toFixed(2)
+          weightToSell = money(
+            birdsToSell * avgWeightPerBird
           );
         }
 
@@ -891,8 +919,8 @@ exports.sellToCustomer = async (user, tripId, data) => {
         );
 
         birdsRemaining -= birdsToSell;
-        weightRemaining = Number(
-          (weightRemaining - weightToSell).toFixed(2)
+        weightRemaining = money(
+          weightRemaining - weightToSell
         );
       }
 
@@ -902,15 +930,15 @@ exports.sellToCustomer = async (user, tripId, data) => {
         weightToSell < 0 ||
         weightToSell > Number(row.weight) + 0.001
       ) {
-        throw new Error(`Invalid weight allocation for cage ${row.cage_number}`);
+        throw new Error(
+          `Invalid weight allocation for cage ${row.cage_number}`
+        );
       }
 
-      const amountToSell = Number(
-        (weightToSell * saleRate).toFixed(2)
-      );
+      const amountToSell = money(weightToSell * saleRate);
 
-      actualSaleAmount = Number(
-        (actualSaleAmount + amountToSell).toFixed(2)
+      actualSaleAmount = money(
+        actualSaleAmount + amountToSell
       );
 
       plannedSales.push({
@@ -937,82 +965,172 @@ exports.sellToCustomer = async (user, tripId, data) => {
     }
 
     // =========================================================
-    // 7. VALIDATE PAYMENT AGAINST THE SERVER-CALCULATED SALE
+    // 7. CALCULATE PAYMENT AND NEW OUTSTANDING
+    //
+    // Customer:
+    //   new outstanding = old outstanding + sale - payment
+    //
+    // Driver transfer:
+    //   Payment cannot exceed the calculated sale amount.
     // =========================================================
 
-    const paymentReceived = Number((cash + upi).toFixed(2));
+    const paymentReceived = money(cash + upi);
 
-    if (paymentReceived > actualSaleAmount + 0.001) {
+    if (
+      isDriverTransfer &&
+      paymentReceived > actualSaleAmount + 0.001
+    ) {
       throw new Error(
         'Payment cannot exceed the calculated sale amount'
       );
     }
 
     const newOutstanding = isCustomerSale
-      ? Number(
-          Math.max(
-            0,
-            customerOutstanding + actualSaleAmount - paymentReceived
-          ).toFixed(2)
+      ? money(
+          customerOutstanding +
+          actualSaleAmount -
+          paymentReceived
         )
       : null;
 
     // =========================================================
-// 7. ENFORCE CUSTOMER CREDIT RULES
-// =========================================================
+    // 8. ENFORCE CUSTOMER CREDIT RULES
+    // =========================================================
 
-// RED: The full amount of the current sale must be paid.
-if (
-  isCustomerSale &&
-  customerType === 'RED' &&
-  paymentReceived + 0.001 < actualSaleAmount
-) {
-  throw new Error(
-    'RED customer: full payment is required before completing the sale'
-  );
-}
+    // Existing advance credit can cover a current sale.
+    const existingAdvanceCredit = isCustomerSale
+      ? Math.max(0, -customerOutstanding)
+      : 0;
 
-// ORANGE:
-// - credit_limit = 0: no credit allowed; full current sale must be paid.
-// - credit_limit > 0: outstanding after this sale cannot exceed the limit.
-if (isCustomerSale && customerType === 'ORANGE') {
-  if (
-    customerCreditLimit === 0 &&
-    paymentReceived + 0.001 < actualSaleAmount
-  ) {
-    throw new Error(
-      'ORANGE customer: full payment is required because the credit limit is zero'
+    const availableForCurrentSale = money(
+      paymentReceived + existingAdvanceCredit
     );
-  }
 
-  if (
-    customerCreditLimit > 0 &&
-    newOutstanding > customerCreditLimit
-  ) {
-    throw new Error(
-      `Credit limit exceeded. Current outstanding: ${customerOutstanding.toFixed(2)}, ` +
-      `new outstanding: ${newOutstanding.toFixed(2)}, ` +
-      `credit limit: ${customerCreditLimit.toFixed(2)}`
-    );
-  }
-}
+    // RED: Current sale must be fully covered by payment
+    // and any existing customer advance credit.
+    if (
+      isCustomerSale &&
+      customerType === 'RED' &&
+      availableForCurrentSale + 0.001 < actualSaleAmount
+    ) {
+      throw new Error(
+        'RED customer: full payment is required before completing the sale'
+      );
+    }
 
-// GREEN: Allow the sale even when outstanding exceeds a positive limit,
-// but return a warning to the frontend.
-if (
-  isCustomerSale &&
-  customerType === 'GREEN' &&
-  customerCreditLimit > 0 &&
-  newOutstanding > customerCreditLimit
-) {
-  creditWarning =
-    `Warning: This GREEN customer's outstanding balance will exceed ` +
-    `the credit limit of ₹${customerCreditLimit.toFixed(2)}. ` +
-    `New outstanding: ₹${newOutstanding.toFixed(2)}. The sale was allowed.`;
-}
+    // ORANGE:
+    // - Zero credit limit: current sale must be fully covered.
+    // - Positive credit limit: final outstanding cannot exceed limit.
+    if (
+      isCustomerSale &&
+      customerType === 'ORANGE'
+    ) {
+      if (
+        customerCreditLimit === 0 &&
+        availableForCurrentSale + 0.001 < actualSaleAmount
+      ) {
+        throw new Error(
+          'ORANGE customer: full payment is required because the credit limit is zero'
+        );
+      }
+
+      if (
+        customerCreditLimit > 0 &&
+        newOutstanding > customerCreditLimit
+      ) {
+        throw new Error(
+          `Credit limit exceeded. Current outstanding: ${customerOutstanding.toFixed(2)}, ` +
+          `new outstanding: ${newOutstanding.toFixed(2)}, ` +
+          `credit limit: ${customerCreditLimit.toFixed(2)}`
+        );
+      }
+    }
+
+    // GREEN: Allow sale over the limit but return a warning.
+    if (
+      isCustomerSale &&
+      customerType === 'GREEN' &&
+      customerCreditLimit > 0 &&
+      newOutstanding > customerCreditLimit
+    ) {
+      creditWarning =
+        `Warning: This GREEN customer's outstanding balance will exceed ` +
+        `the credit limit of ₹${customerCreditLimit.toFixed(2)}. ` +
+        `New outstanding: ₹${newOutstanding.toFixed(2)}. The sale was allowed.`;
+    }
 
     // =========================================================
-    // 8. ALLOCATE CASH AND UPI PROPORTIONALLY ACROSS CAGE SALES
+    // 9. SPLIT PAYMENT BETWEEN SALE AND EXCESS PAYMENT
+    //
+    // Only the portion up to the current sale amount is recorded
+    // against the cage sale rows.
+    //
+    // Any excess is recorded as a separate PAYMENT row.
+    // This prevents sale-row payments from exceeding sale value.
+    // =========================================================
+
+    const paymentAppliedToSale = money(
+      Math.min(paymentReceived, actualSaleAmount)
+    );
+
+    let saleCashTotal = 0;
+    let saleUpiTotal = 0;
+
+    if (paymentReceived > 0 && paymentAppliedToSale > 0) {
+      saleCashTotal = money(
+        paymentAppliedToSale * (cash / paymentReceived)
+      );
+
+      saleCashTotal = Math.min(saleCashTotal, cash);
+
+      saleUpiTotal = money(
+        paymentAppliedToSale - saleCashTotal
+      );
+
+      if (saleUpiTotal > upi) {
+        saleUpiTotal = upi;
+        saleCashTotal = money(
+          paymentAppliedToSale - saleUpiTotal
+        );
+      }
+
+      // Correct any rounding remainder without exceeding
+      // the actual cash or UPI received.
+      let remainder = money(
+        paymentAppliedToSale - saleCashTotal - saleUpiTotal
+      );
+
+      if (remainder > 0) {
+        const additionalCash = Math.min(
+          remainder,
+          money(cash - saleCashTotal)
+        );
+
+        saleCashTotal = money(
+          saleCashTotal + additionalCash
+        );
+
+        remainder = money(remainder - additionalCash);
+
+        if (remainder > 0) {
+          const additionalUpi = Math.min(
+            remainder,
+            money(upi - saleUpiTotal)
+          );
+
+          saleUpiTotal = money(
+            saleUpiTotal + additionalUpi
+          );
+        }
+      }
+    }
+
+    const extraCash = money(cash - saleCashTotal);
+    const extraUpi = money(upi - saleUpiTotal);
+    const extraPayment = money(extraCash + extraUpi);
+
+    // =========================================================
+    // 10. ALLOCATE SALE PAYMENT ACROSS CAGES
     // =========================================================
 
     let allocatedCash = 0;
@@ -1026,17 +1144,17 @@ if (
       let saleUpi = 0;
 
       if (isLast) {
-        // Put rounding remainders on the final row so totals reconcile.
-        saleCash = Number((cash - allocatedCash).toFixed(2));
-        saleUpi = Number((upi - allocatedUpi).toFixed(2));
+        saleCash = money(saleCashTotal - allocatedCash);
+        saleUpi = money(saleUpiTotal - allocatedUpi);
       } else {
-        const proportion = sale.amountToSell / actualSaleAmount;
+        const proportion =
+          sale.amountToSell / actualSaleAmount;
 
-        saleCash = Number((cash * proportion).toFixed(2));
-        saleUpi = Number((upi * proportion).toFixed(2));
+        saleCash = money(saleCashTotal * proportion);
+        saleUpi = money(saleUpiTotal * proportion);
 
-        allocatedCash = Number((allocatedCash + saleCash).toFixed(2));
-        allocatedUpi = Number((allocatedUpi + saleUpi).toFixed(2));
+        allocatedCash = money(allocatedCash + saleCash);
+        allocatedUpi = money(allocatedUpi + saleUpi);
       }
 
       sale.cashAmount = saleCash;
@@ -1044,30 +1162,38 @@ if (
     }
 
     // =========================================================
-    // 9. INSERT SALES AND DEDUCT STOCK
+    // 11. INSERT SALE ROWS AND DEDUCT STOCK
     // =========================================================
 
     for (const sale of plannedSales) {
-      const { row, birdsToSell, weightToSell, amountToSell } = sale;
+      const {
+        row,
+        birdsToSell,
+        weightToSell,
+        amountToSell,
+      } = sale;
 
       await client.query(
         `
-        INSERT INTO sales (
-          trip_id,
-          customer_id,
-          target_driver_id,
-          sale_target_type,
-          cage_number,
-          sell_type,
-          bird_count,
-          weight,
-          rate,
-          total_amount,
-          payment_mode,
-          cash_amount,
-          upi_amount
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          INSERT INTO sales (
+            trip_id,
+            customer_id,
+            target_driver_id,
+            sale_target_type,
+            cage_number,
+            sell_type,
+            bird_count,
+            weight,
+            rate,
+            total_amount,
+            payment_mode,
+            cash_amount,
+            upi_amount
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, $13
+          )
         `,
         [
           tripId,
@@ -1088,15 +1214,19 @@ if (
 
       const stockUpdate = await client.query(
         `
-        UPDATE trip_cage_entries
-        SET
-          bird_count = bird_count - $1,
-          weight = GREATEST(0, weight - $2)
-        WHERE id = $3
-          AND bird_count >= $1
-          AND weight >= $2
+          UPDATE trip_cage_entries
+          SET
+            bird_count = bird_count - $1,
+            weight = GREATEST(0, weight - $2)
+          WHERE id = $3
+            AND bird_count >= $1
+            AND weight >= $2
         `,
-        [birdsToSell, weightToSell, row.entry_id]
+        [
+          birdsToSell,
+          weightToSell,
+          row.entry_id,
+        ]
       );
 
       if (stockUpdate.rowCount !== 1) {
@@ -1107,23 +1237,75 @@ if (
     }
 
     // =========================================================
-    // 10. UPDATE CUSTOMER OUTSTANDING
+    // 12. RECORD EXCESS PAYMENT
+    //
+    // Example:
+    // Sale = ₹22,202.40
+    // Payment = ₹23,000
+    // Sale rows receive ₹22,202.40.
+    // A separate PAYMENT row records ₹797.60.
+    //
+    // The customer's outstanding is still calculated using
+    // the full payment, so old dues are cleared first and any
+    // remainder becomes negative outstanding (advance credit).
+    // =========================================================
+
+    if (isCustomerSale && extraPayment > 0) {
+      await client.query(
+        `
+          INSERT INTO sales (
+            trip_id,
+            customer_id,
+            target_driver_id,
+            sale_target_type,
+            cage_number,
+            sell_type,
+            bird_count,
+            weight,
+            rate,
+            total_amount,
+            payment_mode,
+            cash_amount,
+            upi_amount
+          )
+          VALUES (
+            $1, $2, NULL, 'CUSTOMER', 0, 'PAYMENT',
+            0, 0, 0, $3, $4, $5, $6
+          )
+        `,
+        [
+          tripId,
+          customer_id,
+          extraPayment,
+          paymentMode,
+          extraCash,
+          extraUpi,
+        ]
+      );
+    }
+
+    // =========================================================
+    // 13. UPDATE CUSTOMER OUTSTANDING
     // =========================================================
 
     if (isCustomerSale) {
       await client.query(
         `
-        UPDATE customers
-        SET outstanding = $1
-        WHERE id = $2
-          AND company_id = $3
+          UPDATE customers
+          SET outstanding = $1
+          WHERE id = $2
+            AND company_id = $3
         `,
-        [newOutstanding, customer_id, trip.company_id]
+        [
+          newOutstanding,
+          customer_id,
+          trip.company_id,
+        ]
       );
     }
 
     // =========================================================
-    // 11. COMMIT
+    // 14. COMMIT
     // =========================================================
 
     await client.query('COMMIT');
@@ -1133,9 +1315,23 @@ if (
       message: isDriverTransfer
         ? 'Driver transfer recorded successfully'
         : 'Sale recorded successfully',
+
       sale_amount: actualSaleAmount,
       payment_received: paymentReceived,
-      outstanding: isCustomerSale ? newOutstanding : undefined,
+      payment_applied_to_sale: paymentAppliedToSale,
+
+      extra_payment: isCustomerSale
+        ? extraPayment
+        : 0,
+
+      outstanding: isCustomerSale
+        ? newOutstanding
+        : undefined,
+
+      advance_credit: isCustomerSale
+        ? money(Math.max(0, -newOutstanding))
+        : undefined,
+
       credit_warning: creditWarning,
     };
   } catch (error) {
@@ -1143,7 +1339,10 @@ if (
       try {
         await client.query('ROLLBACK');
       } catch (rollbackError) {
-        console.error('Transaction rollback failed:', rollbackError);
+        console.error(
+          'Transaction rollback failed:',
+          rollbackError
+        );
       }
     }
 
