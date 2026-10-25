@@ -2360,56 +2360,72 @@ exports.getTripSalesDetails = async (tripId) => {
 // CUSTOMER SALES DETAILS (LIKE TRIP SALES)
 // =======================================================
 
+
+
 exports.getCustomerSalesDetails = async (companyId, customerId) => {
   const result = await pool.query(
     `
     SELECT
       s.id,
-
       TO_CHAR(t.trip_date, 'YYYY-MM-DD') AS sale_date,
-
       c.name AS customer_name,
-
       t.id AS trip_id,
       f.name AS farmer_name,
       u.name AS driver_name,
-
       s.cage_number,
       s.sell_type,
       s.bird_count,
       s.weight,
       s.rate,
-
       s.total_amount,
       s.payment_mode,
       s.cash_amount,
       s.upi_amount,
-
       (
-        s.total_amount -
-        (COALESCE(s.cash_amount,0) + COALESCE(s.upi_amount,0))
+        COALESCE(s.total_amount, 0) -
+        COALESCE(s.cash_amount, 0) -
+        COALESCE(s.upi_amount, 0)
       ) AS pending
-
     FROM sales s
-
-    JOIN customers c ON c.id = s.customer_id
-    JOIN trips t ON t.id = s.trip_id
-
-    LEFT JOIN farms fm ON fm.id = t.farm_id
-    LEFT JOIN farmers f ON f.id = fm.farmer_id
-
-    JOIN users u ON u.id = t.driver_id
-
+    JOIN customers c
+      ON c.id = s.customer_id
+    JOIN trips t
+      ON t.id = s.trip_id
+    LEFT JOIN farms fm
+      ON fm.id = t.farm_id
+    LEFT JOIN farmers f
+      ON f.id = fm.farmer_id
+    JOIN users u
+      ON u.id = t.driver_id
     WHERE t.company_id = $1
       AND s.customer_id = $2
-
     ORDER BY t.trip_date DESC, s.id DESC
     `,
     [companyId, customerId]
   );
 
-  return result.rows;
+  // Get the customer's stored outstanding balance,
+  // including any older outstanding amount.
+  const outstandingRes = await pool.query(
+    `
+    SELECT
+      COALESCE(outstanding, 0) AS total_outstanding
+    FROM customers
+    WHERE id = $1
+      AND company_id = $2
+    `,
+    [customerId, companyId]
+  );
+
+  return {
+    rows: result.rows,
+    total_outstanding: Number(
+      outstandingRes.rows[0]?.total_outstanding ?? 0
+    ),
+  };
 };
+
+
 
 /* ================= BROKERS ================= */
 
@@ -2814,6 +2830,7 @@ exports.updateBrokerTrip = async (companyId, userId, tripId, data) => {
 };
 
 
+
 exports.getTripDC = async (user, tripId) => {
   const companyId = user?.company_id ?? user?.companyId;
 
@@ -2887,7 +2904,24 @@ exports.getTripDC = async (user, tripId) => {
     throw error;
   }
 
-  // 2. Calculate original cage quantities:
+  // 2. Fetch the purchase rate for the trip from expenses.
+  // This is a single rate for the entire trip, not a cage-level rate.
+  const expenseRes = await pool.query(
+    `
+    SELECT purchase_rate_per_kg
+    FROM expenses
+    WHERE trip_id = $1
+    ORDER BY created_at ASC, id ASC
+    LIMIT 1
+    `,
+    [tripId]
+  );
+
+  const purchaseRatePerKg = Number(
+    expenseRes.rows[0]?.purchase_rate_per_kg ?? 0
+  );
+
+  // 3. Calculate original cage quantities:
   // remaining stock + quantities already sold
   const result = await pool.query(
     `
@@ -2935,7 +2969,27 @@ exports.getTripDC = async (user, tripId) => {
     total_weight: Number(row.total_weight || 0),
   }));
 
-  // 3. Return trip, party, and cage details
+  // 4. Calculate trip totals.
+  const totalCages = cages.length;
+
+  const totalBirds = cages.reduce(
+    (sum, cage) => sum + cage.total_birds,
+    0
+  );
+
+  const totalWeight = Number(
+    cages.reduce(
+      (sum, cage) => sum + cage.total_weight,
+      0
+    ).toFixed(2)
+  );
+
+  // One purchase rate for the entire trip.
+  const totalPurchaseCost = Number(
+    (totalWeight * purchaseRatePerKg).toFixed(2)
+  );
+
+  // 5. Return trip, party, cage, and purchase details.
   return {
     trip_id: Number(trip.id),
     company_id: Number(trip.company_id),
@@ -2954,15 +3008,16 @@ exports.getTripDC = async (user, tripId) => {
     driver_name: trip.driver_name || '',
     driver_number: trip.driver_number || '',
 
-    total_cages: cages.length,
-    total_birds: cages.reduce(
-      (sum, cage) => sum + cage.total_birds,
-      0
-    ),
-    total_weight: cages.reduce(
-      (sum, cage) => sum + cage.total_weight,
-      0
-    ),
+    total_cages: totalCages,
+    total_birds: totalBirds,
+    total_weight: totalWeight,
+
+    // Purchase amounts are trip-level values, not per-cage values.
+    purchase_rate_per_kg: purchaseRatePerKg,
+    total_purchase_cost: totalPurchaseCost,
+
     cages,
   };
 };
+
+module.exports = exports;
