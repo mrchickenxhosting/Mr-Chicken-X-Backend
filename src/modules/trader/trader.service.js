@@ -2,47 +2,157 @@ const pool = require('../../config/db');
 const bcrypt = require('bcrypt');
 
 /* ========= COMMON USER (MANAGER / DRIVER / LIFTER) ========= */
-exports.createUser = async (companyId, { name, mobile, password }, role) => {
-  if (!name || !mobile || !password) throw new Error('All fields required');
+exports.createUser = async (
+  companyId,
+  { name, mobile, password, monthly_salary },
+  role
+) => {
+  if (!name || !mobile || !password) {
+    throw new Error('All fields required');
+  }
+
+  let salary = null;
+
+  if (role === 'DRIVER' && monthly_salary !== undefined &&
+      monthly_salary !== null && monthly_salary !== '') {
+    salary = Number(monthly_salary);
+
+    if (!Number.isFinite(salary) || salary < 0) {
+      throw new Error('Monthly salary must be a valid non-negative amount');
+    }
+  }
 
   const exists = await pool.query(
-    'SELECT id FROM users WHERE mobile=$1',
+    'SELECT id FROM users WHERE mobile = $1',
     [mobile]
   );
-  if (exists.rows.length) throw new Error('Mobile already exists');
+
+  if (exists.rows.length) {
+    throw new Error('Mobile already exists');
+  }
 
   const hash = await bcrypt.hash(password, 10);
 
-  const res = await pool.query(`
-    INSERT INTO users (company_id, name, mobile, password, role)
-    VALUES ($1,$2,$3,$4,$5)
-    RETURNING id,name,mobile
-  `, [companyId, name, mobile, hash, role]);
+  const res = await pool.query(
+    `
+    INSERT INTO users (
+      company_id,
+      name,
+      mobile,
+      password,
+      role,
+      monthly_salary
+    )
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING id, name, mobile, role, monthly_salary
+    `,
+    [companyId, name, mobile, hash, role, salary]
+  );
 
-  return { message: `${role} created`, user: res.rows[0] };
+  return {
+    message: `${role} created`,
+    user: res.rows[0],
+  };
 };
-
 exports.getUsers = async (companyId, role) => {
-  const res = await pool.query(`
-    SELECT id,name,mobile,status,created_at
+  const res = await pool.query(
+    `
+    SELECT
+      id,
+      name,
+      mobile,
+      status,
+      created_at,
+      CASE
+        WHEN role = 'DRIVER' THEN monthly_salary
+        ELSE NULL
+      END AS monthly_salary
     FROM users
-    WHERE company_id=$1 AND role=$2
+    WHERE company_id = $1
+      AND role = $2
     ORDER BY created_at DESC
-  `, [companyId, role]);
+    `,
+    [companyId, role]
+  );
+
   return res.rows;
 };
 
-exports.updateUserStatus = async (companyId, userId, status, role) => {
-  if (typeof status !== 'boolean') throw new Error('Invalid status');
+exports.updateUser = async (companyId, userId, data, role) => {
+  const { name, mobile, monthly_salary } = data;
 
-  const res = await pool.query(`
-    UPDATE users SET status=$1
-    WHERE id=$2 AND company_id=$3 AND role=$4
-    RETURNING id
-  `, [status, userId, companyId, role]);
+  const hasName = name !== undefined && name !== null && name !== '';
+  const hasMobile = mobile !== undefined && mobile !== null && mobile !== '';
+  const hasSalary = role === 'DRIVER' && monthly_salary !== undefined;
 
-  if (!res.rows.length) throw new Error(`${role} not found`);
-  return { message: `${role} ${status ? 'enabled' : 'disabled'}` };
+  if (!hasName && !hasMobile && !hasSalary) {
+    throw new Error('Nothing to update');
+  }
+
+  let salary = null;
+
+  if (hasSalary) {
+    if (monthly_salary === null || monthly_salary === '') {
+      salary = null;
+    } else {
+      salary = Number(monthly_salary);
+
+      if (!Number.isFinite(salary) || salary < 0) {
+        throw new Error('Monthly salary must be a valid non-negative amount');
+      }
+    }
+  }
+
+  if (hasMobile) {
+    const exists = await pool.query(
+      `
+      SELECT id
+      FROM users
+      WHERE mobile = $1
+        AND id <> $2
+      `,
+      [mobile, userId]
+    );
+
+    if (exists.rows.length) {
+      throw new Error('Mobile already exists');
+    }
+  }
+
+  const res = await pool.query(
+    `
+    UPDATE users
+    SET
+      name = COALESCE($1, name),
+      mobile = COALESCE($2, mobile),
+      monthly_salary = CASE
+        WHEN $6::boolean THEN $7::numeric
+        ELSE monthly_salary
+      END
+    WHERE id = $3
+      AND company_id = $4
+      AND role = $5
+    RETURNING id, name, mobile, role, monthly_salary
+    `,
+    [
+      hasName ? name : null,
+      hasMobile ? mobile : null,
+      userId,
+      companyId,
+      role,
+      hasSalary,
+      salary,
+    ]
+  );
+
+  if (!res.rows.length) {
+    throw new Error(`${role} not found`);
+  }
+
+  return {
+    message: `${role} updated successfully`,
+    user: res.rows[0],
+  };
 };
 
 exports.updateUser = async (companyId, userId, data, role) => {
@@ -1559,24 +1669,80 @@ exports.deleteTrip = async (companyId, tripId) => {
 
 /* ========= SALES (MANAGER VIEW) ========= */
 
-exports.getTripSales = async (companyId, tripId) => {
-  console.log('================================');
-  console.log('getTripSales called');
-  console.log('tripId:', tripId);
-  console.log('companyId:', companyId);
-  console.log('================================');
+// exports.getTripSales = async (companyId, tripId) => {
+//   console.log('================================');
+//   console.log('getTripSales called');
+//   console.log('tripId:', tripId);
+//   console.log('companyId:', companyId);
+//   console.log('================================');
 
+//   const res = await pool.query(
+//     `
+//     SELECT
+//       s.id,
+//       s.trip_id,
+
+//       s.sale_target_type,
+
+//       s.customer_id,
+//       c.name AS customer_name,
+
+//       s.target_driver_id,
+//       u.name AS driver_name,
+
+//       CASE
+//         WHEN s.sale_target_type = 'DRIVER'
+//           THEN u.name
+//         ELSE c.name
+//       END AS buyer_name,
+
+//       s.cage_number,
+//       s.sell_type,
+//       s.bird_count,
+//       s.weight,
+//       s.rate,
+//       s.total_amount,
+
+//       s.payment_mode,
+//       COALESCE(s.cash_amount, 0) AS cash_amount,
+//       COALESCE(s.upi_amount, 0) AS upi_amount,
+
+//       s.created_at
+
+//     FROM sales s
+
+//     LEFT JOIN customers c
+//       ON c.id = s.customer_id
+
+//     LEFT JOIN users u
+//       ON u.id = s.target_driver_id
+
+//     JOIN trips t
+//       ON t.id = s.trip_id
+
+//     WHERE s.trip_id = $1
+//       AND t.company_id = $2
+
+//     ORDER BY s.cage_number, s.created_at ASC
+//     `,
+//     [tripId, companyId]
+//   );
+
+//   console.log('Sales Found:', res.rows.length);
+//   console.log(JSON.stringify(res.rows, null, 2));
+
+//   return res.rows;
+// };
+
+exports.getTripSales = async (companyId, tripId) => {
   const res = await pool.query(
     `
     SELECT
       s.id,
       s.trip_id,
-
       s.sale_target_type,
-
       s.customer_id,
       c.name AS customer_name,
-
       s.target_driver_id,
       u.name AS driver_name,
 
@@ -1592,38 +1758,30 @@ exports.getTripSales = async (companyId, tripId) => {
       s.weight,
       s.rate,
       s.total_amount,
-
       s.payment_mode,
       COALESCE(s.cash_amount, 0) AS cash_amount,
       COALESCE(s.upi_amount, 0) AS upi_amount,
-
       s.created_at
 
     FROM sales s
-
     LEFT JOIN customers c
       ON c.id = s.customer_id
-
     LEFT JOIN users u
       ON u.id = s.target_driver_id
-
     JOIN trips t
       ON t.id = s.trip_id
 
     WHERE s.trip_id = $1
       AND t.company_id = $2
+      AND s.sell_type <> 'PAYMENT'
 
     ORDER BY s.cage_number, s.created_at ASC
     `,
     [tripId, companyId]
   );
 
-  console.log('Sales Found:', res.rows.length);
-  console.log(JSON.stringify(res.rows, null, 2));
-
   return res.rows;
 };
-
 
 /* ========= DAY CLOSE ========= */
 
