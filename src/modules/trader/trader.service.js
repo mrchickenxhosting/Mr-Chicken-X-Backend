@@ -406,17 +406,26 @@ exports.deleteUser = async (companyId, userId, role) => {
 };
 
 
+
 /* ========= CARS ========= */
 
+// CREATE CAR
 exports.createCar = async (
   companyId,
-  { car_number, model_name, max_capacity_cages },
-  rcBookFile
+  data = {},
+  rcBookFile = null
 ) => {
+  const {
+    car_number,
+    model_name,
+    max_capacity_cages,
+  } = data;
+
   if (!car_number || !model_name || !max_capacity_cages) {
     throw new Error('All fields required');
   }
 
+  // Check duplicate car number
   const exists = await pool.query(
     `
     SELECT id
@@ -435,7 +444,7 @@ exports.createCar = async (
     ? `/uploads/car-rc/${rcBookFile.filename}`
     : null;
 
-  const res = await pool.query(
+  const result = await pool.query(
     `
     INSERT INTO car_master (
       company_id,
@@ -458,12 +467,14 @@ exports.createCar = async (
 
   return {
     message: 'Car created successfully',
-    car: res.rows[0],
+    car: result.rows[0],
   };
 };
 
+
+// GET ALL CARS
 exports.getCars = async (companyId) => {
-  const res = await pool.query(
+  const result = await pool.query(
     `
     SELECT
       id,
@@ -480,9 +491,11 @@ exports.getCars = async (companyId) => {
     [companyId]
   );
 
-  return res.rows;
+  return result.rows;
 };
 
+
+// UPDATE CAR STATUS
 exports.updateCarStatus = async (
   companyId,
   carId,
@@ -492,7 +505,7 @@ exports.updateCarStatus = async (
     throw new Error('Invalid status');
   }
 
-  const res = await pool.query(
+  const result = await pool.query(
     `
     UPDATE car_master
     SET is_active = $1
@@ -503,7 +516,7 @@ exports.updateCarStatus = async (
     [is_active, carId, companyId]
   );
 
-  if (!res.rows.length) {
+  if (!result.rows.length) {
     throw new Error('Car not found');
   }
 
@@ -512,47 +525,93 @@ exports.updateCarStatus = async (
   };
 };
 
-exports.updateCar = async (req, res) => {
-  try {
-    console.log('UPDATE BODY:', req.body);
-    console.log('UPDATE FILE:', req.file);
 
-    const result = await traderService.updateCar(
-      req.user.companyId,
-      req.params.id,
-      req.body,
-      req.file
+// UPDATE CAR + RC BOOK
+exports.updateCar = async (
+  companyId,
+  carId,
+  data = {},
+  rcBookFile = null
+) => {
+  const {
+    car_number,
+    model_name,
+    max_capacity_cages,
+  } = data;
+
+  // Check whether anything was submitted
+  if (
+    car_number === undefined &&
+    model_name === undefined &&
+    max_capacity_cages === undefined &&
+    !rcBookFile
+  ) {
+    throw new Error('Nothing to update');
+  }
+
+  // Validate car number uniqueness
+  if (car_number) {
+    const exists = await pool.query(
+      `
+      SELECT id
+      FROM car_master
+      WHERE company_id = $1
+        AND car_number = $2
+        AND id <> $3
+      `,
+      [companyId, car_number, carId]
     );
 
-    return res.status(200).json(result);
-  } catch (error) {
-    if (req.file) {
-      const fs = require('fs');
-      const path = require('path');
-
-      const filePath = path.join(
-        process.cwd(),
-        'uploads',
-        'car-rc',
-        req.file.filename
-      );
-
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
+    if (exists.rows.length) {
+      throw new Error('Car number already exists');
     }
-
-    return res.status(500).json({
-      message: error.message,
-    });
   }
+
+  // New RC Book path, or preserve existing document
+  const rcBookUrl = rcBookFile
+    ? `/uploads/car-rc/${rcBookFile.filename}`
+    : null;
+
+  const result = await pool.query(
+    `
+    UPDATE car_master
+    SET
+      car_number = COALESCE($1, car_number),
+      model_name = COALESCE($2, model_name),
+      max_capacity_cages = COALESCE($3, max_capacity_cages),
+      rc_book_url = COALESCE($4, rc_book_url),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $5
+      AND company_id = $6
+    RETURNING *
+    `,
+    [
+      car_number || null,
+      model_name || null,
+      max_capacity_cages ?? null,
+      rcBookUrl,
+      carId,
+      companyId,
+    ]
+  );
+
+  if (!result.rows.length) {
+    throw new Error('Car not found');
+  }
+
+  return {
+    message: 'Car updated successfully',
+    car: result.rows[0],
+  };
 };
 
+
+// DELETE CAR
 exports.deleteCar = async (
   companyId,
   carId
 ) => {
-  const res = await pool.query(
+  const result = await pool.query(
     `
     DELETE FROM car_master
     WHERE id = $1
@@ -562,7 +621,7 @@ exports.deleteCar = async (
     [carId, companyId]
   );
 
-  if (!res.rows.length) {
+  if (!result.rows.length) {
     throw new Error('Car not found');
   }
 
