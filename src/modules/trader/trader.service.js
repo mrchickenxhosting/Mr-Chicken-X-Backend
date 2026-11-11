@@ -512,79 +512,40 @@ exports.updateCarStatus = async (
   };
 };
 
-exports.updateCar = async (
-  companyId,
-  carId,
-  data,
-  rcBookFile
-) => {
-  const {
-    car_number,
-    model_name,
-    max_capacity_cages,
-  } = data;
+exports.updateCars = async (req, res) => {
+  try {
+    console.log('UPDATE BODY:', req.body);
+    console.log('UPDATE FILE:', req.file);
 
-  if (
-    !car_number &&
-    !model_name &&
-    max_capacity_cages === undefined &&
-    !rcBookFile
-  ) {
-    throw new Error('Nothing to update');
-  }
-
-  if (car_number) {
-    const exists = await pool.query(
-      `
-      SELECT id
-      FROM car_master
-      WHERE company_id = $1
-        AND car_number = $2
-        AND id <> $3
-      `,
-      [companyId, car_number, carId]
+    const result = await traderService.updateCar(
+      req.user.companyId,
+      req.params.id,
+      req.body,
+      req.file
     );
 
-    if (exists.rows.length) {
-      throw new Error('Car number already exists');
+    return res.status(200).json(result);
+  } catch (error) {
+    if (req.file) {
+      const fs = require('fs');
+      const path = require('path');
+
+      const filePath = path.join(
+        process.cwd(),
+        'uploads',
+        'car-rc',
+        req.file.filename
+      );
+
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
     }
+
+    return res.status(500).json({
+      message: error.message,
+    });
   }
-
-  const rcBookUrl = rcBookFile
-    ? `/uploads/car-rc/${rcBookFile.filename}`
-    : null;
-
-  const res = await pool.query(
-    `
-    UPDATE car_master
-    SET
-      car_number = COALESCE($1, car_number),
-      model_name = COALESCE($2, model_name),
-      max_capacity_cages = COALESCE($3, max_capacity_cages),
-      rc_book_url = COALESCE($4, rc_book_url),
-      updated_at = CURRENT_TIMESTAMP
-    WHERE id = $5
-      AND company_id = $6
-    RETURNING *
-    `,
-    [
-      car_number || null,
-      model_name || null,
-      max_capacity_cages ?? null,
-      rcBookUrl,
-      carId,
-      companyId,
-    ]
-  );
-
-  if (!res.rows.length) {
-    throw new Error('Car not found');
-  }
-
-  return {
-    message: 'Car updated successfully',
-    car: res.rows[0],
-  };
 };
 
 exports.deleteCar = async (
