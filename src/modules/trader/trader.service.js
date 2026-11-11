@@ -1,26 +1,164 @@
 const pool = require('../../config/db');
 const bcrypt = require('bcrypt');
 
+
 /* ========= COMMON USER (MANAGER / DRIVER / LIFTER) ========= */
-exports.createUser = async (
-  companyId,
-  { name, mobile, password, monthly_salary },
-  role
-) => {
-  if (!name || !mobile || !password) {
-    throw new Error('All fields required');
+
+
+const SALARY_ROLES = ['DRIVER', 'MANAGER', 'LIFTER'];
+
+const USER_ROLE_FIELDS = {
+  DRIVER: [
+    'aadhaar_number',
+    'pan_number',
+    'driving_license_number',
+    'bank_account_number',
+    'ifsc_code',
+    'bank_holder_name',
+  ],
+  MANAGER: [
+    'aadhaar_number',
+    'pan_number',
+    'bank_account_number',
+    'ifsc_code',
+    'bank_holder_name',
+  ],
+  LIFTER: [
+    'aadhaar_number',
+    'pan_number',
+    'bank_account_number',
+    'ifsc_code',
+    'bank_holder_name',
+  ],
+};
+
+const USER_MASTER_FIELDS = [
+  'aadhaar_number',
+  'pan_number',
+  'driving_license_number',
+  'bank_account_number',
+  'ifsc_code',
+  'bank_holder_name',
+];
+
+const normalizeUserFields = (data, role) => {
+  if (!USER_ROLE_FIELDS[role]) {
+    throw new Error('Invalid user role');
   }
 
-  let salary = null;
+  const result = {};
 
-  if (role === 'DRIVER' && monthly_salary !== undefined &&
-      monthly_salary !== null && monthly_salary !== '') {
-    salary = Number(monthly_salary);
+  for (const field of USER_MASTER_FIELDS) {
+    if (data[field] === undefined) continue;
 
-    if (!Number.isFinite(salary) || salary < 0) {
-      throw new Error('Monthly salary must be a valid non-negative amount');
+    if (!USER_ROLE_FIELDS[role].includes(field)) {
+      throw new Error(`${field} is not applicable for ${role}`);
+    }
+
+    const value =
+      data[field] === null || data[field] === ''
+        ? null
+        : String(data[field]).trim();
+
+    result[field] = value || null;
+  }
+
+  if (result.aadhaar_number) {
+    result.aadhaar_number = result.aadhaar_number.replace(/\s/g, '');
+
+    if (!/^\d{12}$/.test(result.aadhaar_number)) {
+      throw new Error('Aadhaar number must contain exactly 12 digits');
     }
   }
+
+  if (result.pan_number) {
+    result.pan_number = result.pan_number.toUpperCase();
+
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(result.pan_number)) {
+      throw new Error('Invalid PAN number');
+    }
+  }
+
+  if (result.ifsc_code) {
+    result.ifsc_code = result.ifsc_code.toUpperCase();
+
+    if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(result.ifsc_code)) {
+      throw new Error('Invalid IFSC code');
+    }
+  }
+
+  if (result.bank_account_number) {
+    if (!/^\d{6,34}$/.test(result.bank_account_number)) {
+      throw new Error('Bank account number must contain 6 to 34 digits');
+    }
+  }
+
+  if (result.bank_holder_name && result.bank_holder_name.length > 100) {
+    throw new Error('Bank holder name cannot exceed 100 characters');
+  }
+
+  if (result.driving_license_number) {
+    result.driving_license_number =
+      result.driving_license_number.toUpperCase();
+
+    if (!/^[A-Z0-9/-]{5,30}$/.test(result.driving_license_number)) {
+      throw new Error('Invalid driving licence number');
+    }
+  }
+
+  return result;
+};
+
+const validateSalary = (monthly_salary) => {
+  if (
+    monthly_salary === undefined ||
+    monthly_salary === null ||
+    monthly_salary === ''
+  ) {
+    return null;
+  }
+
+  const salary = Number(monthly_salary);
+
+  if (
+    !Number.isFinite(salary) ||
+    salary < 0 ||
+    Math.round(salary * 100) !== salary * 100
+  ) {
+    throw new Error(
+      'Monthly salary must be a non-negative amount with at most 2 decimal places'
+    );
+  }
+
+  return salary;
+};
+
+/* ========= CREATE USER ========= */
+exports.createUser = async (
+  companyId,
+  data,
+  role
+) => {
+  const {
+    name,
+    mobile,
+    password,
+    monthly_salary,
+  } = data;
+
+  if (!name || !mobile || !password) {
+    throw new Error('Name, mobile and password are required');
+  }
+
+  if (!USER_ROLE_FIELDS[role]) {
+    throw new Error('Invalid user role');
+  }
+
+  const salary = SALARY_ROLES.includes(role)
+    ? validateSalary(monthly_salary)
+    : null;
+
+  const masterFields = normalizeUserFields(data, role);
 
   const exists = await pool.query(
     'SELECT id FROM users WHERE mobile = $1',
@@ -41,12 +179,45 @@ exports.createUser = async (
       mobile,
       password,
       role,
-      monthly_salary
+      monthly_salary,
+      aadhaar_number,
+      pan_number,
+      driving_license_number,
+      bank_account_number,
+      ifsc_code,
+      bank_holder_name
     )
-    VALUES ($1, $2, $3, $4, $5, $6)
-    RETURNING id, name, mobile, role, monthly_salary
+    VALUES (
+      $1, $2, $3, $4, $5, $6,
+      $7, $8, $9, $10, $11, $12
+    )
+    RETURNING
+      id,
+      name,
+      mobile,
+      role,
+      monthly_salary,
+      aadhaar_number,
+      pan_number,
+      driving_license_number,
+      bank_account_number,
+      ifsc_code,
+      bank_holder_name
     `,
-    [companyId, name, mobile, hash, role, salary]
+    [
+      companyId,
+      name.trim(),
+      mobile,
+      hash,
+      role,
+      salary,
+      masterFields.aadhaar_number ?? null,
+      masterFields.pan_number ?? null,
+      masterFields.driving_license_number ?? null,
+      masterFields.bank_account_number ?? null,
+      masterFields.ifsc_code ?? null,
+      masterFields.bank_holder_name ?? null,
+    ]
   );
 
   return {
@@ -54,7 +225,13 @@ exports.createUser = async (
     user: res.rows[0],
   };
 };
+
+/* ========= GET USERS ========= */
 exports.getUsers = async (companyId, role) => {
+  if (!USER_ROLE_FIELDS[role]) {
+    throw new Error('Invalid user role');
+  }
+
   const res = await pool.query(
     `
     SELECT
@@ -63,10 +240,13 @@ exports.getUsers = async (companyId, role) => {
       mobile,
       status,
       created_at,
-      CASE
-        WHEN role = 'DRIVER' THEN monthly_salary
-        ELSE NULL
-      END AS monthly_salary
+      monthly_salary,
+      aadhaar_number,
+      pan_number,
+      driving_license_number,
+      bank_account_number,
+      ifsc_code,
+      bank_holder_name
     FROM users
     WHERE company_id = $1
       AND role = $2
@@ -78,30 +258,50 @@ exports.getUsers = async (companyId, role) => {
   return res.rows;
 };
 
+/* ========= UPDATE USER ========= */
 exports.updateUser = async (companyId, userId, data, role) => {
-  const { name, mobile, monthly_salary } = data;
+  if (!USER_ROLE_FIELDS[role]) {
+    throw new Error('Invalid user role');
+  }
 
-  const hasName = name !== undefined && name !== null && name !== '';
-  const hasMobile = mobile !== undefined && mobile !== null && mobile !== '';
-  const hasSalary = role === 'DRIVER' && monthly_salary !== undefined;
+  const {
+    name,
+    mobile,
+    monthly_salary,
+  } = data;
 
-  if (!hasName && !hasMobile && !hasSalary) {
+  const hasName = name !== undefined;
+  const hasMobile = mobile !== undefined;
+  const hasSalary = monthly_salary !== undefined;
+
+  const masterFields = normalizeUserFields(data, role);
+
+  const hasMasterFields = Object.keys(masterFields).length > 0;
+
+  if (
+    !hasName &&
+    !hasMobile &&
+    !hasSalary &&
+    !hasMasterFields
+  ) {
     throw new Error('Nothing to update');
   }
 
-  let salary = null;
-
-  if (hasSalary) {
-    if (monthly_salary === null || monthly_salary === '') {
-      salary = null;
-    } else {
-      salary = Number(monthly_salary);
-
-      if (!Number.isFinite(salary) || salary < 0) {
-        throw new Error('Monthly salary must be a valid non-negative amount');
-      }
-    }
+  if (hasName && (!name || !String(name).trim())) {
+    throw new Error('Name cannot be empty');
   }
+
+  if (hasMobile && (!mobile || !String(mobile).trim())) {
+    throw new Error('Mobile cannot be empty');
+  }
+
+  if (hasSalary && !SALARY_ROLES.includes(role)) {
+    throw new Error(`Salary updates are not allowed for ${role}`);
+  }
+
+  const salary = hasSalary
+    ? validateSalary(monthly_salary)
+    : undefined;
 
   if (hasMobile) {
     const exists = await pool.query(
@@ -119,68 +319,57 @@ exports.updateUser = async (companyId, userId, data, role) => {
     }
   }
 
+  const updateFields = [];
+  const values = [];
+  let paramIndex = 1;
+
+  const addField = (column, value) => {
+    updateFields.push(`${column} = $${paramIndex++}`);
+    values.push(value);
+  };
+
+  if (hasName) {
+    addField('name', String(name).trim());
+  }
+
+  if (hasMobile) {
+    addField('mobile', String(mobile).trim());
+  }
+
+  if (hasSalary) {
+    addField('monthly_salary', salary);
+  }
+
+  // Only fixed, role-approved database columns are updated.
+  for (const field of USER_ROLE_FIELDS[role]) {
+    if (masterFields[field] !== undefined) {
+      addField(field, masterFields[field]);
+    }
+  }
+
+  values.push(userId, companyId, role);
+
   const res = await pool.query(
     `
     UPDATE users
-    SET
-      name = COALESCE($1, name),
-      mobile = COALESCE($2, mobile),
-      monthly_salary = CASE
-        WHEN $6::boolean THEN $7::numeric
-        ELSE monthly_salary
-      END
-    WHERE id = $3
-      AND company_id = $4
-      AND role = $5
-    RETURNING id, name, mobile, role, monthly_salary
-    `,
-    [
-      hasName ? name : null,
-      hasMobile ? mobile : null,
-      userId,
-      companyId,
+    SET ${updateFields.join(', ')}
+    WHERE id = $${paramIndex++}
+      AND company_id = $${paramIndex++}
+      AND role = $${paramIndex}
+    RETURNING
+      id,
+      name,
+      mobile,
       role,
-      hasSalary,
-      salary,
-    ]
-  );
-
-  if (!res.rows.length) {
-    throw new Error(`${role} not found`);
-  }
-
-  return {
-    message: `${role} updated successfully`,
-    user: res.rows[0],
-  };
-};
-
-exports.updateUser = async (companyId, userId, data, role) => {
-  const { name, mobile } = data;
-
-  if (!name && !mobile) {
-    throw new Error('Nothing to update');
-  }
-
-  // Mobile uniqueness check (if changed)
-  if (mobile) {
-    const exists = await pool.query(
-      'SELECT id FROM users WHERE mobile=$1 AND id<>$2',
-      [mobile, userId]
-    );
-    if (exists.rows.length) throw new Error('Mobile already exists');
-  }
-
-  const res = await pool.query(
-    `
-    UPDATE users
-    SET
-      name = COALESCE($1, name),
-      mobile = COALESCE($2, mobile)
-    WHERE id=$3 AND company_id=$4 AND role=$5
-    RETURNING id,name,mobile
+      monthly_salary,
+      aadhaar_number,
+      pan_number,
+      driving_license_number,
+      bank_account_number,
+      ifsc_code,
+      bank_holder_name
     `,
-    [name, mobile, userId, companyId, role]
+    values
   );
 
   if (!res.rows.length) {
@@ -193,11 +382,15 @@ exports.updateUser = async (companyId, userId, data, role) => {
   };
 };
 
+
+/* ========= DELETE USER ========= */
 exports.deleteUser = async (companyId, userId, role) => {
   const res = await pool.query(
     `
     DELETE FROM users
-    WHERE id=$1 AND company_id=$2 AND role=$3
+    WHERE id = $1
+      AND company_id = $2
+      AND role = $3
     RETURNING id
     `,
     [userId, companyId, role]
@@ -211,6 +404,7 @@ exports.deleteUser = async (companyId, userId, role) => {
     message: `${role} deleted successfully`,
   };
 };
+
 
 /* ========= CARS ========= */
 
