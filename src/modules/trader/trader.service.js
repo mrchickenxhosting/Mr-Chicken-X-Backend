@@ -512,7 +512,7 @@ exports.updateCarStatus = async (
   };
 };
 
-exports.updateCars = async (req, res) => {
+exports.updateCar = async (req, res) => {
   try {
     console.log('UPDATE BODY:', req.body);
     console.log('UPDATE FILE:', req.file);
