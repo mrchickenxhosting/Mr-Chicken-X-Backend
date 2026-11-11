@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const authMiddleware = require('../../middlewares/auth.middleware');
+const uploadCarRC = require('../../middlewares/car-rc-upload.middleware');
 const traderController = require('./trader.controller');
 
 /* ================= MANAGERS ================= */
@@ -19,11 +20,31 @@ router.patch('/drivers/:id/status', authMiddleware, traderController.updateDrive
 router.delete('/drivers/:id',authMiddleware,traderController.deleteDrivers);
 
 /* ================= CARS ================= */
-router.post('/cars', authMiddleware, traderController.createCar);
+
+router.post(
+  '/cars',
+  authMiddleware,
+  uploadCarRC.single('rc_book'),
+  traderController.createCar
+);
+
 router.get('/cars', authMiddleware, traderController.getCars);
-router.put('/cars/:id',authMiddleware,traderController.updateCars);
-router.patch('/cars/:id/status', authMiddleware, traderController.updateCarStatus);
-router.delete('/cars/:id',authMiddleware,traderController.deleteCars);
+
+router.put(
+  '/cars/:id',
+  authMiddleware,
+  uploadCarRC.single('rc_book'),
+  traderController.updateCars
+);
+
+router.patch(
+  '/cars/:id/status',
+  authMiddleware,
+  traderController.updateCarStatus
+);
+
+router.delete('/cars/:id', authMiddleware, traderController.deleteCars);
+
 
 /* ================= LIFTER ================= */
 router.post('/lifters', authMiddleware, traderController.createLifter);

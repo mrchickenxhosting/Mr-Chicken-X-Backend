@@ -132,14 +132,33 @@ exports.deleteDrivers = async (req, res) => {
 
 exports.createCar = async (req, res) => {
   try {
-    res.status(201).json(
-      await traderService.createCar(req.user.companyId, req.body)
+    const result = await traderService.createCar(
+      req.user.companyId,
+      req.body,
+      req.file
     );
+
+    return res.status(201).json(result);
   } catch (e) {
-    res.status(400).json({ message: e.message });
+    // Remove uploaded file if service fails.
+    if (req.file) {
+      const fs = require('fs');
+      const path = require('path');
+
+      const filePath = path.join(
+        process.cwd(),
+        'uploads/car-rc',
+        req.file.filename
+      );
+
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    return res.status(400).json({ message: e.message });
   }
 };
-
 exports.getCars = async (req, res) => {
   try {
     res.json(await traderService.getCars(req.user.companyId));
@@ -164,15 +183,32 @@ exports.updateCarStatus = async (req, res) => {
 
 exports.updateCars = async (req, res) => {
   try {
-    res.json(
-      await traderService.updateCar(
-        req.user.companyId,
-        req.params.id,
-        req.body
-      )
+    const result = await traderService.updateCar(
+      req.user.companyId,
+      req.params.id,
+      req.body,
+      req.file
     );
+
+    return res.json(result);
   } catch (e) {
-    res.status(400).json({ message: e.message });
+    // Remove newly uploaded file if update fails.
+    if (req.file) {
+      const fs = require('fs');
+      const path = require('path');
+
+      const filePath = path.join(
+        process.cwd(),
+        'uploads/car-rc',
+        req.file.filename
+      );
+
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    return res.status(400).json({ message: e.message });
   }
 };
 

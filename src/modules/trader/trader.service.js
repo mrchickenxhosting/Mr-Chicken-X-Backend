@@ -410,7 +410,8 @@ exports.deleteUser = async (companyId, userId, role) => {
 
 exports.createCar = async (
   companyId,
-  { car_number, model_name, max_capacity_cages }
+  { car_number, model_name, max_capacity_cages },
+  rcBookFile
 ) => {
   if (!car_number || !model_name || !max_capacity_cages) {
     throw new Error('All fields required');
@@ -430,19 +431,29 @@ exports.createCar = async (
     throw new Error('Car number already exists');
   }
 
+  const rcBookUrl = rcBookFile
+    ? `/uploads/car-rc/${rcBookFile.filename}`
+    : null;
+
   const res = await pool.query(
     `
-    INSERT INTO car_master
-    (
+    INSERT INTO car_master (
       company_id,
       car_number,
       model_name,
-      max_capacity_cages
+      max_capacity_cages,
+      rc_book_url
     )
-    VALUES ($1,$2,$3,$4)
+    VALUES ($1, $2, $3, $4, $5)
     RETURNING *
     `,
-    [companyId, car_number, model_name, max_capacity_cages]
+    [
+      companyId,
+      car_number,
+      model_name,
+      max_capacity_cages,
+      rcBookUrl,
+    ]
   );
 
   return {
@@ -459,6 +470,7 @@ exports.getCars = async (companyId) => {
       car_number,
       model_name,
       max_capacity_cages,
+      rc_book_url,
       is_active,
       created_at
     FROM car_master
@@ -503,7 +515,8 @@ exports.updateCarStatus = async (
 exports.updateCar = async (
   companyId,
   carId,
-  data
+  data,
+  rcBookFile
 ) => {
   const {
     car_number,
@@ -514,7 +527,8 @@ exports.updateCar = async (
   if (
     !car_number &&
     !model_name &&
-    max_capacity_cages === undefined
+    max_capacity_cages === undefined &&
+    !rcBookFile
   ) {
     throw new Error('Nothing to update');
   }
@@ -536,6 +550,10 @@ exports.updateCar = async (
     }
   }
 
+  const rcBookUrl = rcBookFile
+    ? `/uploads/car-rc/${rcBookFile.filename}`
+    : null;
+
   const res = await pool.query(
     `
     UPDATE car_master
@@ -543,15 +561,17 @@ exports.updateCar = async (
       car_number = COALESCE($1, car_number),
       model_name = COALESCE($2, model_name),
       max_capacity_cages = COALESCE($3, max_capacity_cages),
+      rc_book_url = COALESCE($4, rc_book_url),
       updated_at = CURRENT_TIMESTAMP
-    WHERE id = $4
-      AND company_id = $5
+    WHERE id = $5
+      AND company_id = $6
     RETURNING *
     `,
     [
-      car_number,
-      model_name,
-      max_capacity_cages,
+      car_number || null,
+      model_name || null,
+      max_capacity_cages ?? null,
+      rcBookUrl,
       carId,
       companyId,
     ]
